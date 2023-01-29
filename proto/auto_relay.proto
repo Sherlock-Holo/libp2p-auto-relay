@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package auto_relay;
+
+message DialRequest {
+  string addr = 1;
+}
+
+message DialSuccessResponse {}
+
+message DialFailedResponse {
+  string reason = 1;
+}
+
+message DialResponse {
+  oneof result {
+    DialSuccessResponse success = 1;
+    DialFailedResponse failed = 2;
+  }
+}
+
+message ListenRequest {
+  string local_peer_id = 1;
+  string local_addr = 2;
+}
+
+message ListenSuccessResponse {}
+
+message ListenFailedResponse {
+  string reason = 1;
+}
+
+message ListenResponse {
+  oneof result {
+    ListenSuccessResponse success = 1;
+    ListenFailedResponse failed = 2;
+  }
+}
+
+message ConnectRequest {
+  string listen_addr = 1;
+  string remote_addr = 2;
+}
+
+message ConnectSuccessResponse {}
+
+message ConnectFailedResponse {
+  string reason = 1;
+}
+
+message ConnectResponse {
+  oneof result {
+    ConnectSuccessResponse success = 1;
+    ConnectFailedResponse failed = 2;
+  }
+}

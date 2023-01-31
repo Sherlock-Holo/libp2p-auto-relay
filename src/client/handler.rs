@@ -1,22 +1,23 @@
 use std::collections::VecDeque;
 use std::io;
+use std::io::ErrorKind;
 use std::task::{Context, Poll};
 
-use futures_channel::oneshot::Sender as OneshotSender;
 use futures_util::future::Either;
-use libp2p_core::transport::ListenerId;
-use libp2p_core::{ConnectedPoint, Multiaddr, PeerId};
+use libp2p_core::{ConnectedPoint, PeerId};
 use libp2p_swarm::handler::{
     ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
     ListenUpgradeError,
 };
-use libp2p_swarm::{ConnectionHandlerEvent, KeepAlive, SubstreamProtocol};
-use thiserror::Error;
+use libp2p_swarm::{
+    ConnectionHandlerEvent, ConnectionHandlerUpgrErr, KeepAlive, SubstreamProtocol,
+};
 use tracing::error;
 
-use super::connection::Connection;
-use super::upgrade::{InboundUpgrade, OutboundUpgrade};
-use crate::client::upgrade::InboundUpgradeOutput;
+use super::event::{
+    ConnectionHandlerError, ConnectionHandlerInEvent, ConnectionHandlerOutEvent, OutboundOpenInfo,
+};
+use super::upgrade::{InboundUpgrade, InboundUpgradeOutput, OutboundUpgrade};
 
 type PendingEvents = VecDeque<
     ConnectionHandlerEvent<
@@ -200,16 +201,36 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
             ConnectionEvent::AddressChange(_) => {}
 
             ConnectionEvent::DialUpgradeError(DialUpgradeError { info, error: err }) => {
+                let err = match err {
+                    ConnectionHandlerUpgrErr::Timeout => io::Error::from(ErrorKind::TimedOut),
+                    _ => io::Error::new(ErrorKind::Other, err),
+                };
+
                 match info {
-                    OutboundOpenInfo::Dial { .. } => {
-                        error!(%err, "dial failed");
+                    OutboundOpenInfo::Dial { connection_sender } => {
+                        self.pending_events
+                            .push_back(ConnectionHandlerEvent::Custom(
+                                ConnectionHandlerOutEvent::DialFailed {
+                                    err,
+                                    sender: connection_sender,
+                                },
+                            ))
                     }
+
                     OutboundOpenInfo::Listen {
                         listener_id,
                         local_peer_id,
                         listen_addr,
                     } => {
-                        error!(?listener_id, %err, %local_peer_id, %listen_addr, "listen failed");
+                        self.pending_events
+                            .push_back(ConnectionHandlerEvent::Custom(
+                                ConnectionHandlerOutEvent::ListenFailed {
+                                    err,
+                                    listener_id,
+                                    local_peer_id,
+                                    listen_addr,
+                                },
+                            ));
                     }
                 }
             }
@@ -220,54 +241,3 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
         }
     }
 }
-
-#[derive(Debug)]
-pub enum ConnectionHandlerInEvent {
-    Dial {
-        dst_addr: Multiaddr,
-        connection_sender: OneshotSender<io::Result<Connection>>,
-    },
-
-    Listen {
-        listener_id: ListenerId,
-        local_peer_id: PeerId,
-        local_addr: Multiaddr,
-    },
-}
-
-#[derive(Debug)]
-pub enum ConnectionHandlerOutEvent {
-    NewConnection {
-        listen_addr: Multiaddr,
-        connection: Connection,
-    },
-
-    DialSuccess {
-        connection: Connection,
-        sender: OneshotSender<io::Result<Connection>>,
-    },
-
-    ListenSuccess {
-        listener_id: ListenerId,
-        local_peer_id: PeerId,
-        listen_addr: Multiaddr,
-    },
-
-    Error(Box<dyn std::error::Error + Send + Sync + 'static>),
-}
-
-#[derive(Debug)]
-pub enum OutboundOpenInfo {
-    Dial {
-        connection_sender: OneshotSender<io::Result<Connection>>,
-    },
-
-    Listen {
-        listener_id: ListenerId,
-        local_peer_id: PeerId,
-        listen_addr: Multiaddr,
-    },
-}
-
-#[derive(Debug, Error)]
-pub enum ConnectionHandlerError {}

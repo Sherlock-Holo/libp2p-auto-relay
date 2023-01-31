@@ -7,7 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use libp2p_core::connection::ConnectionId;
 use libp2p_core::transport::ListenerId;
 use libp2p_core::{Multiaddr, PeerId};
-use libp2p_swarm::behaviour::FromSwarm;
+use libp2p_swarm::behaviour::{ConnectionClosed, ConnectionEstablished, FromSwarm};
 use libp2p_swarm::{
     ConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
 };
@@ -16,8 +16,7 @@ use tracing::{debug, error, instrument};
 use self::connection::Connection;
 pub use self::event::Event;
 use self::event::{BehaviourToTransportEvent, TransportToBehaviourEvent};
-use self::handler::ConnectionHandlerInEvent;
-use self::handler::ConnectionHandlerOutEvent;
+use self::event::{ConnectionHandlerInEvent, ConnectionHandlerOutEvent};
 use self::handler::IntoConnectionHandler;
 pub use self::transport::{Error, Transport};
 
@@ -71,8 +70,17 @@ impl NetworkBehaviour for Behaviour {
 
     fn on_swarm_event(&mut self, event: FromSwarm<Self::ConnectionHandler>) {
         match event {
-            FromSwarm::ConnectionEstablished(_) => {}
-            FromSwarm::ConnectionClosed(_) => {}
+            FromSwarm::ConnectionEstablished(ConnectionEstablished { .. }) => {}
+
+            FromSwarm::ConnectionClosed(ConnectionClosed {
+                peer_id, endpoint, ..
+            }) => {
+                self.pending_to_transport
+                    .push_back(BehaviourToTransportEvent::PeerClosed {
+                        peer_id,
+                        peer_addr: endpoint.get_remote_address().clone(),
+                    });
+            }
             FromSwarm::AddressChange(_) => {}
             FromSwarm::DialFailure(_) => {}
             FromSwarm::ListenFailure(_) => {}
@@ -131,6 +139,28 @@ impl NetworkBehaviour for Behaviour {
                         listener_id,
                         local_addr: listen_addr,
                     });
+            }
+
+            ConnectionHandlerOutEvent::DialFailed { err, sender } => {
+                error!(%err, "dial failed");
+
+                let _ = sender.send(Err(err));
+            }
+
+            ConnectionHandlerOutEvent::ListenFailed {
+                err,
+                listener_id,
+                listen_addr,
+                ..
+            } => {
+                error!(%err, "listen failed");
+
+                self.pending_to_transport
+                    .push_back(BehaviourToTransportEvent::ListenFailed {
+                        err,
+                        listener_id,
+                        local_addr: listen_addr,
+                    })
             }
         }
     }

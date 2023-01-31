@@ -113,11 +113,17 @@ impl libp2p_core::Transport for Transport {
         self.pending_to_behaviour.push_back(event);
 
         Ok(async move {
-            let connection = conn_receiver.await.map_err(|err| {
-                error!(%err, "connection sender is dropped");
+            let connection = conn_receiver
+                .await
+                .map_err(|err| {
+                    error!(%err, "connection sender is dropped");
 
-                io::Error::new(ErrorKind::Other, "connection sender is dropped")
-            })??;
+                    Error::DialFailed(io::Error::new(
+                        ErrorKind::Other,
+                        "connection sender is dropped",
+                    ))
+                })?
+                .map_err(Error::DialFailed)?;
 
             Ok(connection)
         })
@@ -134,19 +140,42 @@ impl libp2p_core::Transport for Transport {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<TransportEvent<Self::ListenerUpgrade, Self::Error>> {
-        match self.from_behaviour.poll_next_unpin(cx) {
-            Poll::Ready(Some(BehaviourToTransportEvent::ListenSuccess {
-                listener_id,
-                local_addr,
-            })) => {
-                return Poll::Ready(TransportEvent::NewAddress {
-                    listener_id,
-                    listen_addr: local_addr,
-                })
-            }
+        loop {
+            match self.from_behaviour.poll_next_unpin(cx) {
+                Poll::Ready(Some(behaviour_to_transport_event)) => {
+                    match behaviour_to_transport_event {
+                        BehaviourToTransportEvent::ListenSuccess {
+                            listener_id,
+                            local_addr,
+                        } => {
+                            return Poll::Ready(TransportEvent::NewAddress {
+                                listener_id,
+                                listen_addr: local_addr,
+                            })
+                        }
 
-            Poll::Ready(None) => panic!("behaviour is dropped but transport is still polled"),
-            Poll::Pending => {}
+                        BehaviourToTransportEvent::ListenFailed {
+                            err, listener_id, ..
+                        } => {
+                            self.remove_listener(listener_id);
+
+                            return Poll::Ready(TransportEvent::ListenerError {
+                                listener_id,
+                                error: Error::ListenFailed(err),
+                            });
+                        }
+
+                        BehaviourToTransportEvent::PeerClosed { peer_id, peer_addr } => {
+                            if self.relay_peer_id == peer_id && peer_addr == self.relay_addr {
+                                todo!("how to what listener has relationship with this closed underlay connection")
+                            }
+                        }
+                    }
+                }
+
+                Poll::Ready(None) => panic!("behaviour is dropped but transport is still polled"),
+                Poll::Pending => break,
+            }
         }
 
         while let Some(transport_to_behaviour_event) = self.pending_to_behaviour.pop_front() {
@@ -209,7 +238,7 @@ impl Stream for Listener {
 
                         TransportEvent::ListenerError {
                             listener_id: self.listener_id,
-                            error: err.into(),
+                            error: Error::DialFailed(err),
                         }
                     }
 
@@ -232,14 +261,13 @@ impl Stream for Listener {
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("dial failed: {0}")]
-    DialFailed(
-        #[from]
-        #[source]
-        io::Error,
-    ),
+    DialFailed(#[source] io::Error),
 
     #[error("unsupported dial as listener")]
     UnsupportedDialAsListener,
+
+    #[error("listen failed: {0}")]
+    ListenFailed(#[source] io::Error),
 }
 
 impl From<Error> for TransportError<Error> {

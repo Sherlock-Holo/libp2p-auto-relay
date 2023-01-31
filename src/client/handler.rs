@@ -12,7 +12,7 @@ use libp2p_swarm::handler::{
 };
 use libp2p_swarm::{ConnectionHandlerEvent, KeepAlive, SubstreamProtocol};
 use thiserror::Error;
-use tracing::{debug, error};
+use tracing::error;
 
 use super::connection::Connection;
 use super::upgrade::{InboundUpgrade, OutboundUpgrade};
@@ -167,11 +167,13 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
                 info,
             }) => match (protocol, info) {
                 (Either::Left(connection), OutboundOpenInfo::Dial { connection_sender }) => {
-                    if let Err(_err) = connection_sender.send(Ok(connection)) {
-                        debug!("connection dial is canceled");
-                    } else {
-                        debug!("connection dial done, send back to transport");
-                    }
+                    self.pending_events
+                        .push_back(ConnectionHandlerEvent::Custom(
+                            ConnectionHandlerOutEvent::DialSuccess {
+                                connection,
+                                sender: connection_sender,
+                            },
+                        ));
                 }
 
                 (
@@ -182,7 +184,14 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
                         listen_addr,
                     },
                 ) => {
-                    debug!(?listener_id, %local_peer_id, %listen_addr, "listen done");
+                    self.pending_events
+                        .push_back(ConnectionHandlerEvent::Custom(
+                            ConnectionHandlerOutEvent::ListenSuccess {
+                                listener_id,
+                                local_peer_id,
+                                listen_addr,
+                            },
+                        ));
                 }
 
                 _ => unreachable!(),
@@ -232,6 +241,18 @@ pub enum ConnectionHandlerOutEvent {
         listen_addr: Multiaddr,
         connection: Connection,
     },
+
+    DialSuccess {
+        connection: Connection,
+        sender: OneshotSender<io::Result<Connection>>,
+    },
+
+    ListenSuccess {
+        listener_id: ListenerId,
+        local_peer_id: PeerId,
+        listen_addr: Multiaddr,
+    },
+
     Error(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 

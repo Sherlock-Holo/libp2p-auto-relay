@@ -16,7 +16,7 @@ use tracing::{error, instrument};
 
 use super::connection::Connection;
 use super::event::{BehaviourToTransportEvent, TransportToBehaviourEvent};
-use super::Client;
+use super::Behaviour;
 
 #[derive(Debug)]
 pub struct Transport {
@@ -34,11 +34,11 @@ impl Transport {
         local_peer_id: PeerId,
         relay_addr: Multiaddr,
         relay_peer_id: PeerId,
-    ) -> (Self, Client) {
+    ) -> (Self, Behaviour) {
         let (t_to_b_sender, t_to_b_receiver) = mpsc::channel(10);
         let (b_to_t_sender, b_to_t_receiver) = mpsc::channel(10);
 
-        let client = Client::new(local_peer_id, t_to_b_receiver, b_to_t_sender);
+        let client = Behaviour::new(local_peer_id, t_to_b_receiver, b_to_t_sender);
 
         (
             Self {
@@ -138,7 +138,6 @@ impl libp2p_core::Transport for Transport {
             Poll::Ready(Some(BehaviourToTransportEvent::ListenSuccess {
                 listener_id,
                 local_addr,
-                ..
             })) => {
                 return Poll::Ready(TransportEvent::NewAddress {
                     listener_id,

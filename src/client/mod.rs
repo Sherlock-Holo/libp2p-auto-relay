@@ -11,10 +11,10 @@ use libp2p_swarm::behaviour::FromSwarm;
 use libp2p_swarm::{
     ConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
 };
-use tracing::error;
+use tracing::{debug, error, instrument};
 
 use self::connection::Connection;
-pub use self::event::BehaviourEvent;
+pub use self::event::Event;
 use self::event::{BehaviourToTransportEvent, TransportToBehaviourEvent};
 use self::handler::ConnectionHandlerInEvent;
 use self::handler::ConnectionHandlerOutEvent;
@@ -28,7 +28,7 @@ mod transport;
 mod upgrade;
 
 #[derive(Debug)]
-pub struct Client {
+pub struct Behaviour {
     from_transport: Receiver<TransportToBehaviourEvent>,
     peer_id: PeerId,
     listeners: HashMap<Multiaddr, ListenerSenderWithId>,
@@ -43,7 +43,7 @@ pub struct Client {
     to_transport: Sender<BehaviourToTransportEvent>,
 }
 
-impl Client {
+impl Behaviour {
     pub(crate) fn new(
         peer_id: PeerId,
         from_transport: Receiver<TransportToBehaviourEvent>,
@@ -61,9 +61,9 @@ impl Client {
     }
 }
 
-impl NetworkBehaviour for Client {
+impl NetworkBehaviour for Behaviour {
     type ConnectionHandler = IntoConnectionHandler;
-    type OutEvent = BehaviourEvent;
+    type OutEvent = Event;
 
     fn new_handler(&mut self) -> Self::ConnectionHandler {
         IntoConnectionHandler::default()
@@ -86,6 +86,7 @@ impl NetworkBehaviour for Client {
         }
     }
 
+    #[instrument]
     fn on_connection_handler_event(
         &mut self,
         _peer_id: PeerId,
@@ -105,9 +106,31 @@ impl NetworkBehaviour for Client {
             }
             ConnectionHandlerOutEvent::Error(err) => {
                 self.pending_actions
-                    .push_back(NetworkBehaviourAction::GenerateEvent(
-                        BehaviourEvent::OtherError(err),
-                    ));
+                    .push_back(NetworkBehaviourAction::GenerateEvent(Event::OtherError(
+                        err,
+                    )));
+            }
+
+            ConnectionHandlerOutEvent::DialSuccess { connection, sender } => {
+                if let Err(_err) = sender.send(Ok(connection)) {
+                    debug!("connection dial is canceled");
+                } else {
+                    debug!("connection dial done, send back to transport");
+                }
+            }
+
+            ConnectionHandlerOutEvent::ListenSuccess {
+                listener_id,
+                local_peer_id,
+                listen_addr,
+            } => {
+                debug!(?listener_id, %local_peer_id, %listen_addr, "listen done");
+
+                self.pending_to_transport
+                    .push_back(BehaviourToTransportEvent::ListenSuccess {
+                        listener_id,
+                        local_addr: listen_addr,
+                    });
             }
         }
     }
@@ -168,7 +191,7 @@ impl NetworkBehaviour for Client {
                     error!(listen_addr = %new_connection.listen_addr, "unexpected new connection");
 
                     return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                        BehaviourEvent::UnexpectedConnection {
+                        Event::UnexpectedConnection {
                             listen_addr: new_connection.listen_addr,
                         },
                     ));
@@ -189,7 +212,7 @@ impl NetworkBehaviour for Client {
                     error!(%err, listen_addr = %new_connection.listen_addr, "listener sender is dropped");
 
                     return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                        BehaviourEvent::UnexpectedListenerClosed {
+                        Event::UnexpectedListenerClosed {
                             listen_addr: new_connection.listen_addr,
                             err: Box::new(err),
                         },
@@ -206,7 +229,7 @@ impl NetworkBehaviour for Client {
                 error!(%err, listen_addr = %new_connection.listen_addr, "listener sender is dropped");
 
                 return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                    BehaviourEvent::UnexpectedListenerClosed {
+                    Event::UnexpectedListenerClosed {
                         listen_addr: new_connection.listen_addr,
                         err: Box::new(err),
                     },
@@ -233,7 +256,7 @@ impl NetworkBehaviour for Client {
                     error!(%err, "transport is dropped");
 
                     return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                        BehaviourEvent::UnexpectedTransportDropped,
+                        Event::UnexpectedTransportDropped,
                     ));
                 }
 
@@ -247,7 +270,7 @@ impl NetworkBehaviour for Client {
                 error!(%err, "transport is dropped");
 
                 return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                    BehaviourEvent::UnexpectedTransportDropped,
+                    Event::UnexpectedTransportDropped,
                 ));
             }
         }
@@ -256,7 +279,7 @@ impl NetworkBehaviour for Client {
             error!(%err, "transport is dropped");
 
             return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                BehaviourEvent::UnexpectedTransportDropped,
+                Event::UnexpectedTransportDropped,
             ));
         }
 

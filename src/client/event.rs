@@ -35,7 +35,7 @@ pub enum BehaviourToTransportEvent {
 }
 
 #[derive(Debug)]
-pub enum BehaviourEvent {
+pub enum Event {
     UnexpectedConnection {
         listen_addr: Multiaddr,
     },

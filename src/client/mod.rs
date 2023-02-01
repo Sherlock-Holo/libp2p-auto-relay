@@ -98,7 +98,7 @@ impl NetworkBehaviour for Behaviour {
         }
     }
 
-    #[instrument]
+    #[instrument(level = "debug")]
     fn on_connection_handler_event(
         &mut self,
         _peer_id: PeerId,
@@ -169,6 +169,7 @@ impl NetworkBehaviour for Behaviour {
         }
     }
 
+    #[instrument(level = "debug", skip(_params))]
     fn poll(
         &mut self,
         cx: &mut Context<'_>,

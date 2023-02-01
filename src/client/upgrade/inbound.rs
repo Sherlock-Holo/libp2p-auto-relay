@@ -28,7 +28,7 @@ impl libp2p_core::InboundUpgrade<NegotiatedSubstream> for InboundUpgrade {
     type Error = UpgradeError;
     type Future = impl Future<Output = Result<Self::Output, Self::Error>>;
 
-    #[instrument]
+    #[instrument(level = "debug")]
     fn upgrade_inbound(self, socket: NegotiatedSubstream, _info: Self::Info) -> Self::Future {
         async move {
             let mut framed = Framed::new(socket, prost_codec::Codec::new(MAX_MESSAGE_SIZE));
@@ -98,7 +98,7 @@ impl libp2p_core::InboundUpgrade<NegotiatedSubstream> for InboundUpgrade {
     }
 }
 
-#[instrument(err, skip(framed))]
+#[instrument(level = "debug", err, skip(framed))]
 async fn parse_addr<S>(
     addr_type: &str,
     addr: String,

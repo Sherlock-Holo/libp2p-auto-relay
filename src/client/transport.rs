@@ -12,7 +12,7 @@ use futures_util::{SinkExt, Stream, StreamExt};
 use libp2p_core::transport::{ListenerId, TransportError, TransportEvent};
 use libp2p_core::{Multiaddr, PeerId};
 use thiserror::Error;
-use tracing::{error, instrument};
+use tracing::{debug_span, error, instrument, Instrument};
 
 use super::connection::Connection;
 use super::event::{BehaviourToTransportEvent, TransportToBehaviourEvent};
@@ -61,6 +61,7 @@ impl libp2p_core::Transport for Transport {
     type ListenerUpgrade = Ready<Result<Self::Output, Self::Error>>;
     type Dial = impl Future<Output = Result<Self::Output, Self::Error>>;
 
+    #[instrument(level = "debug", err)]
     fn listen_on(&mut self, addr: Multiaddr) -> Result<ListenerId, TransportError<Self::Error>> {
         let (conn_sender, conn_receiver) = mpsc::channel(10);
         let listener_id = ListenerId::new();
@@ -100,7 +101,7 @@ impl libp2p_core::Transport for Transport {
         }
     }
 
-    #[instrument(err)]
+    #[instrument(level = "debug", err)]
     fn dial(&mut self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
         let (conn_sender, conn_receiver) = oneshot::channel();
 
@@ -126,7 +127,8 @@ impl libp2p_core::Transport for Transport {
                 .map_err(Error::DialFailed)?;
 
             Ok(connection)
-        })
+        }
+        .instrument(debug_span!("dial")))
     }
 
     fn dial_as_listener(
@@ -136,6 +138,7 @@ impl libp2p_core::Transport for Transport {
         Err::<Self::Dial, _>(Error::UnsupportedDialAsListener.into())
     }
 
+    #[instrument(level = "debug")]
     fn poll(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -222,6 +225,7 @@ struct Listener {
 impl Stream for Listener {
     type Item = TransportEvent<Ready<Result<Connection, Error>>, Error>;
 
+    #[instrument(level = "debug")]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.receiver.as_mut() {
             None => Poll::Ready(None),

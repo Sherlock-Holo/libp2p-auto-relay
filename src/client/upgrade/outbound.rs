@@ -36,6 +36,7 @@ impl OutboundUpgrade {
         }
     }
 
+    #[instrument(level = "debug", err)]
     async fn dial_upgrade(
         dst_addr: Multiaddr,
         socket: NegotiatedSubstream,
@@ -103,7 +104,7 @@ impl OutboundUpgrade {
         ))
     }
 
-    #[instrument(err)]
+    #[instrument(level = "debug", err)]
     async fn listen_upgrade(
         listen_peer_id: PeerId,
         listen_addr: Multiaddr,
@@ -176,7 +177,7 @@ impl libp2p_core::OutboundUpgrade<NegotiatedSubstream> for OutboundUpgrade {
     type Error = UpgradeError;
     type Future = impl Future<Output = Result<Self::Output, Self::Error>>;
 
-    #[instrument]
+    #[instrument(level = "debug")]
     fn upgrade_outbound(self, socket: NegotiatedSubstream, _info: Self::Info) -> Self::Future {
         async move {
             match self {

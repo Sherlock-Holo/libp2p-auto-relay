@@ -12,7 +12,7 @@ use libp2p_swarm::handler::{
 use libp2p_swarm::{
     ConnectionHandlerEvent, ConnectionHandlerUpgrErr, KeepAlive, SubstreamProtocol,
 };
-use tracing::error;
+use tracing::{error, instrument};
 
 use super::event::{
     ConnectionHandlerError, ConnectionHandlerInEvent, ConnectionHandlerOutEvent, OutboundOpenInfo,
@@ -87,6 +87,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
         self.keepalive
     }
 
+    #[instrument(level = "debug")]
     fn poll(
         &mut self,
         _cx: &mut Context<'_>,
@@ -114,6 +115,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
         }
     }
 
+    #[instrument(level = "debug")]
     fn on_behaviour_event(&mut self, event: Self::InEvent) {
         match event {
             ConnectionHandlerInEvent::Dial {

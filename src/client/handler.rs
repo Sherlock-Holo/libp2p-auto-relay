@@ -28,6 +28,13 @@ type PendingEvents = VecDeque<
     >,
 >;
 
+type SelfConnectionHandlerEvent = ConnectionHandlerEvent<
+    <ConnectionHandler as libp2p_swarm::ConnectionHandler>::OutboundProtocol,
+    <ConnectionHandler as libp2p_swarm::ConnectionHandler>::OutboundOpenInfo,
+    <ConnectionHandler as libp2p_swarm::ConnectionHandler>::OutEvent,
+    <ConnectionHandler as libp2p_swarm::ConnectionHandler>::Error,
+>;
+
 #[derive(Debug)]
 pub struct IntoConnectionHandler {
     keepalive: KeepAlive,
@@ -88,17 +95,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
     }
 
     #[instrument(level = "debug")]
-    fn poll(
-        &mut self,
-        _cx: &mut Context<'_>,
-    ) -> Poll<
-        ConnectionHandlerEvent<
-            Self::OutboundProtocol,
-            Self::OutboundOpenInfo,
-            Self::OutEvent,
-            Self::Error,
-        >,
-    > {
+    fn poll(&mut self, _cx: &mut Context<'_>) -> Poll<SelfConnectionHandlerEvent> {
         if let Some(inbound_upgrade_output) = self.pending_inbound_upgrade_output.pop_front() {
             return Poll::Ready(ConnectionHandlerEvent::Custom(
                 ConnectionHandlerOutEvent::NewConnection {

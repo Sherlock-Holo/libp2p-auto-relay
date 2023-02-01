@@ -14,9 +14,9 @@ use libp2p_core::{Multiaddr, PeerId};
 use thiserror::Error;
 use tracing::{debug_span, error, instrument, Instrument};
 
-use super::connection::Connection;
 use super::event::{BehaviourToTransportEvent, TransportToBehaviourEvent};
 use super::Behaviour;
+use crate::connection::Connection;
 
 #[derive(Debug)]
 pub struct Transport {

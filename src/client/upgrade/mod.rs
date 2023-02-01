@@ -8,9 +8,6 @@ use thiserror::Error;
 mod inbound;
 mod outbound;
 
-const MAX_MESSAGE_SIZE: usize = 4096;
-const AUTO_RELAY_PROTOCOL: &[u8] = b"/auto-relay/0.1";
-
 #[derive(Debug, Error)]
 pub enum UpgradeError {
     #[error("io error: {0}")]

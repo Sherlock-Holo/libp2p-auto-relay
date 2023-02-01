@@ -13,11 +13,11 @@ use libp2p_swarm::{
 };
 use tracing::{debug, error, instrument};
 
-use super::connection::Connection;
 use super::event::{BehaviourToTransportEvent, TransportToBehaviourEvent};
 use super::event::{ConnectionHandlerInEvent, ConnectionHandlerOutEvent};
 use super::handler::IntoConnectionHandler;
 use super::Event;
+use crate::connection::Connection;
 
 #[derive(Debug)]
 pub struct Behaviour {

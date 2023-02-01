@@ -9,9 +9,9 @@ use libp2p_swarm::NegotiatedSubstream;
 use tap::TapFallible;
 use tracing::{debug, debug_span, error, instrument, Instrument};
 
-use super::{UpgradeAction, UpgradeError, AUTO_RELAY_PROTOCOL, MAX_MESSAGE_SIZE};
-use crate::client::connection::Connection;
-use crate::pb;
+use super::{UpgradeAction, UpgradeError};
+use crate::connection::Connection;
+use crate::{pb, AUTO_RELAY_DIAL_PROTOCOL, AUTO_RELAY_LISTEN_PROTOCOL, MAX_MESSAGE_SIZE};
 
 #[derive(Debug)]
 pub enum OutboundUpgrade {
@@ -168,7 +168,10 @@ impl UpgradeInfo for OutboundUpgrade {
     type InfoIter = [Self::Info; 1];
 
     fn protocol_info(&self) -> Self::InfoIter {
-        [AUTO_RELAY_PROTOCOL]
+        match self {
+            OutboundUpgrade::Dial { .. } => [AUTO_RELAY_DIAL_PROTOCOL],
+            OutboundUpgrade::Listen { .. } => [AUTO_RELAY_LISTEN_PROTOCOL],
+        }
     }
 }
 

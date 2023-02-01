@@ -6,7 +6,7 @@ use libp2p_core::transport::ListenerId;
 use libp2p_core::{Multiaddr, PeerId};
 use thiserror::Error;
 
-use super::connection::Connection;
+use crate::connection::Connection;
 
 #[derive(Debug)]
 pub enum TransportToBehaviourEvent {

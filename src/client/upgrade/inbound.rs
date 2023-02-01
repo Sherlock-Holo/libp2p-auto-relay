@@ -7,9 +7,9 @@ use libp2p_core::{Multiaddr, UpgradeInfo};
 use libp2p_swarm::NegotiatedSubstream;
 use tracing::{debug, debug_span, error, instrument, warn, Instrument};
 
-use super::{UpgradeError, AUTO_RELAY_PROTOCOL, MAX_MESSAGE_SIZE};
-use crate::client::connection::Connection;
-use crate::pb;
+use super::UpgradeError;
+use crate::connection::Connection;
+use crate::{pb, AUTO_RELAY_CONNECT_PROTOCOL, MAX_MESSAGE_SIZE};
 
 #[derive(Debug)]
 pub struct InboundUpgrade {}
@@ -19,7 +19,7 @@ impl UpgradeInfo for InboundUpgrade {
     type InfoIter = [Self::Info; 1];
 
     fn protocol_info(&self) -> Self::InfoIter {
-        [AUTO_RELAY_PROTOCOL]
+        [AUTO_RELAY_CONNECT_PROTOCOL]
     }
 }
 

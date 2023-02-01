@@ -1,6 +1,7 @@
 use std::io;
 
 use futures_channel::{mpsc, oneshot};
+use libp2p_core::connection::ConnectionId;
 use libp2p_core::transport::ListenerId;
 use libp2p_core::{Multiaddr, PeerId};
 use thiserror::Error;
@@ -41,6 +42,7 @@ pub enum BehaviourToTransportEvent {
     PeerClosed {
         peer_id: PeerId,
         peer_addr: Multiaddr,
+        connection_id: ConnectionId,
     },
 }
 

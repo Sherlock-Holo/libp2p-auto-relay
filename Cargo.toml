@@ -14,8 +14,6 @@ asynchronous-codec = "0.6"
 bytes = "1"
 futures-util = { version = "0.3", features = ["sink"] }
 futures-channel = "0.3"
-#async-channel = "1"
-crossbeam-channel = "0.5"
 libp2p-core = "0.38"
 libp2p-swarm = "0.41"
 prost-codec = "0.3"

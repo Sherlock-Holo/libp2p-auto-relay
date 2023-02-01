@@ -165,11 +165,7 @@ impl libp2p_core::Transport for Transport {
                             });
                         }
 
-                        BehaviourToTransportEvent::PeerClosed { peer_id, peer_addr } => {
-                            if self.relay_peer_id == peer_id && peer_addr == self.relay_addr {
-                                todo!("how to what listener has relationship with this closed underlay connection")
-                            }
-                        }
+                        BehaviourToTransportEvent::PeerClosed { .. } => {}
                     }
                 }
 

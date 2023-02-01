@@ -73,12 +73,16 @@ impl NetworkBehaviour for Behaviour {
             FromSwarm::ConnectionEstablished(ConnectionEstablished { .. }) => {}
 
             FromSwarm::ConnectionClosed(ConnectionClosed {
-                peer_id, endpoint, ..
+                peer_id,
+                connection_id,
+                endpoint,
+                ..
             }) => {
                 self.pending_to_transport
                     .push_back(BehaviourToTransportEvent::PeerClosed {
                         peer_id,
                         peer_addr: endpoint.get_remote_address().clone(),
+                        connection_id,
                     });
             }
             FromSwarm::AddressChange(_) => {}

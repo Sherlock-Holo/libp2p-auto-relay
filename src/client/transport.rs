@@ -3,11 +3,14 @@ use std::future::{ready, Future, Ready};
 use std::io;
 use std::io::ErrorKind;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
+use dashmap::DashSet;
 use futures_channel::mpsc::{Receiver, Sender};
 use futures_channel::{mpsc, oneshot};
 use futures_util::stream::SelectAll;
+use futures_util::task::AtomicWaker;
 use futures_util::{SinkExt, Stream, StreamExt};
 use libp2p_core::transport::{ListenerId, TransportError, TransportEvent};
 use libp2p_core::{Multiaddr, PeerId};
@@ -27,6 +30,8 @@ pub struct Transport {
     to_behaviour: Sender<TransportToBehaviourEvent>,
     listeners: SelectAll<Listener>,
     from_behaviour: Receiver<BehaviourToTransportEvent>,
+    listen_addrs: Arc<DashSet<Multiaddr>>,
+    waker: AtomicWaker,
 }
 
 impl Transport {
@@ -38,7 +43,13 @@ impl Transport {
         let (t_to_b_sender, t_to_b_receiver) = mpsc::channel(10);
         let (b_to_t_sender, b_to_t_receiver) = mpsc::channel(10);
 
-        let client = Behaviour::new(local_peer_id, t_to_b_receiver, b_to_t_sender);
+        let listen_addrs = Arc::new(DashSet::new());
+        let client = Behaviour::new(
+            local_peer_id,
+            t_to_b_receiver,
+            b_to_t_sender,
+            listen_addrs.clone(),
+        );
 
         (
             Self {
@@ -49,6 +60,8 @@ impl Transport {
                 to_behaviour: t_to_b_sender,
                 listeners: Default::default(),
                 from_behaviour: b_to_t_receiver,
+                listen_addrs,
+                waker: Default::default(),
             },
             client,
         )
@@ -75,6 +88,7 @@ impl libp2p_core::Transport for Transport {
         };
 
         self.pending_to_behaviour.push_back(event);
+        self.waker.wake();
 
         let listener = Listener {
             local_addr: addr,
@@ -103,15 +117,22 @@ impl libp2p_core::Transport for Transport {
 
     #[instrument(level = "debug", err)]
     fn dial(&mut self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
+        let dst_peer_id = match PeerId::try_from_multiaddr(&addr) {
+            None => return Err(TransportError::Other(Error::MissPeerId(addr))),
+            Some(peer_id) => peer_id,
+        };
+
         let (conn_sender, conn_receiver) = oneshot::channel();
 
         let event = TransportToBehaviourEvent::Dial {
+            dst_peer_id,
             dst_addr: addr,
             relay_addr: self.relay_addr.clone(),
             connection_sender: conn_sender,
         };
 
         self.pending_to_behaviour.push_back(event);
+        self.waker.wake();
 
         Ok(async move {
             let connection = conn_receiver
@@ -149,12 +170,14 @@ impl libp2p_core::Transport for Transport {
                     match behaviour_to_transport_event {
                         BehaviourToTransportEvent::ListenSuccess {
                             listener_id,
-                            local_addr,
+                            listen_addr,
                         } => {
+                            self.listen_addrs.insert(listen_addr.clone());
+
                             return Poll::Ready(TransportEvent::NewAddress {
                                 listener_id,
-                                listen_addr: local_addr,
-                            })
+                                listen_addr,
+                            });
                         }
 
                         BehaviourToTransportEvent::ListenFailed {
@@ -206,6 +229,8 @@ impl libp2p_core::Transport for Transport {
         if let Some(event) = ready!(self.listeners.poll_next_unpin(cx)) {
             Poll::Ready(event)
         } else {
+            self.waker.register(cx.waker());
+
             Poll::Pending
         }
     }
@@ -268,6 +293,9 @@ pub enum Error {
 
     #[error("listen failed: {0}")]
     ListenFailed(#[source] io::Error),
+
+    #[error("addr {0} miss peer id")]
+    MissPeerId(Multiaddr),
 }
 
 impl From<Error> for TransportError<Error> {

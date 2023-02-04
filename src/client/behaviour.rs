@@ -1,8 +1,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::task::{ready, Context, Poll};
+use std::sync::Arc;
+use std::task::{Context, Poll};
 
+use dashmap::DashSet;
 use futures_channel::mpsc::{Receiver, Sender};
+use futures_util::task::AtomicWaker;
 use futures_util::{SinkExt, StreamExt};
 use libp2p_core::connection::ConnectionId;
 use libp2p_core::transport::ListenerId;
@@ -33,6 +36,8 @@ pub struct Behaviour {
     >,
     pending_to_transport: VecDeque<BehaviourToTransportEvent>,
     to_transport: Sender<BehaviourToTransportEvent>,
+    listen_addrs: Arc<DashSet<Multiaddr>>,
+    waker: AtomicWaker,
 }
 
 impl Behaviour {
@@ -40,6 +45,7 @@ impl Behaviour {
         peer_id: PeerId,
         from_transport: Receiver<TransportToBehaviourEvent>,
         to_transport: Sender<BehaviourToTransportEvent>,
+        listen_addrs: Arc<DashSet<Multiaddr>>,
     ) -> Self {
         Self {
             from_transport,
@@ -49,6 +55,8 @@ impl Behaviour {
             pending_actions: Default::default(),
             pending_to_transport: Default::default(),
             to_transport,
+            listen_addrs,
+            waker: Default::default(),
         }
     }
 }
@@ -58,7 +66,7 @@ impl NetworkBehaviour for Behaviour {
     type OutEvent = Event;
 
     fn new_handler(&mut self) -> Self::ConnectionHandler {
-        IntoConnectionHandler::default()
+        IntoConnectionHandler::new(self.listen_addrs.clone())
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm<Self::ConnectionHandler>) {
@@ -77,6 +85,8 @@ impl NetworkBehaviour for Behaviour {
                         peer_addr: endpoint.get_remote_address().clone(),
                         connection_id,
                     });
+
+                self.waker.wake();
             }
             FromSwarm::AddressChange(_) => {}
             FromSwarm::DialFailure(_) => {}
@@ -122,6 +132,8 @@ impl NetworkBehaviour for Behaviour {
                 } else {
                     debug!("connection dial done, send back to transport");
                 }
+
+                return;
             }
 
             ConnectionHandlerOutEvent::ListenSuccess {
@@ -134,7 +146,7 @@ impl NetworkBehaviour for Behaviour {
                 self.pending_to_transport
                     .push_back(BehaviourToTransportEvent::ListenSuccess {
                         listener_id,
-                        local_addr: listen_addr,
+                        listen_addr,
                     });
             }
 
@@ -142,6 +154,8 @@ impl NetworkBehaviour for Behaviour {
                 error!(%err, "dial failed");
 
                 let _ = sender.send(Err(err));
+
+                return;
             }
 
             ConnectionHandlerOutEvent::ListenFailed {
@@ -160,6 +174,8 @@ impl NetworkBehaviour for Behaviour {
                     })
             }
         }
+
+        self.waker.wake();
     }
 
     #[instrument(level = "debug", skip(_params))]
@@ -168,10 +184,12 @@ impl NetworkBehaviour for Behaviour {
         cx: &mut Context<'_>,
         _params: &mut impl PollParameters,
     ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
-        if let Some(transport_to_behaviour_event) = ready!(self.from_transport.poll_next_unpin(cx))
+        if let Poll::Ready(Some(transport_to_behaviour_event)) =
+            self.from_transport.poll_next_unpin(cx)
         {
             return match transport_to_behaviour_event {
                 TransportToBehaviourEvent::Dial {
+                    dst_peer_id,
                     dst_addr,
                     relay_addr: _relay_addr,
                     connection_sender,
@@ -179,6 +197,7 @@ impl NetworkBehaviour for Behaviour {
                     peer_id: self.peer_id,
                     handler: NotifyHandler::Any,
                     event: ConnectionHandlerInEvent::Dial {
+                        dst_peer_id,
                         dst_addr,
                         connection_sender,
                     },
@@ -264,10 +283,21 @@ impl NetworkBehaviour for Behaviour {
                 ));
             }
 
+            if let Poll::Ready(Err(err)) = listener_sender_with_id.sender.poll_flush_unpin(cx) {
+                error!(%err, listen_addr = %new_connection.listen_addr, "listener sender is dropped");
+
+                return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
+                    Event::UnexpectedListenerClosed {
+                        listen_addr: new_connection.listen_addr,
+                        err: Box::new(err),
+                    },
+                ));
+            }
+
             self.pending_to_transport
                 .push_back(BehaviourToTransportEvent::ListenSuccess {
                     listener_id: listener_sender_with_id.listener_id,
-                    local_addr: new_connection.listen_addr,
+                    listen_addr: new_connection.listen_addr,
                 });
         }
 
@@ -314,6 +344,8 @@ impl NetworkBehaviour for Behaviour {
         if let Some(action) = self.pending_actions.pop_front() {
             Poll::Ready(action)
         } else {
+            self.waker.register(cx.waker());
+
             Poll::Pending
         }
     }

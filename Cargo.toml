@@ -21,6 +21,7 @@ prost = "0.11"
 thiserror = "1"
 tracing = "0.1"
 tap = "1"
+dashmap = "5"
 
 [build-dependencies]
 prost-build = "0.11"

@@ -1,18 +1,29 @@
 use std::future::Future;
 use std::io;
+use std::sync::Arc;
 
 use asynchronous_codec::Framed;
+use dashmap::DashSet;
 use futures_util::{Sink, SinkExt, TryStreamExt};
 use libp2p_core::{Multiaddr, UpgradeInfo};
 use libp2p_swarm::NegotiatedSubstream;
 use tracing::{debug, debug_span, error, instrument, warn, Instrument};
 
 use super::UpgradeError;
+use crate::client::upgrade::UpgradeAction;
 use crate::connection::Connection;
 use crate::{pb, AUTO_RELAY_CONNECT_PROTOCOL, MAX_MESSAGE_SIZE};
 
 #[derive(Debug)]
-pub struct InboundUpgrade {}
+pub struct InboundUpgrade {
+    listen_addrs: Arc<DashSet<Multiaddr>>,
+}
+
+impl InboundUpgrade {
+    pub fn new(listen_addrs: Arc<DashSet<Multiaddr>>) -> Self {
+        Self { listen_addrs }
+    }
+}
 
 impl UpgradeInfo for InboundUpgrade {
     type Info = &'static [u8];
@@ -34,8 +45,8 @@ impl libp2p_core::InboundUpgrade<NegotiatedSubstream> for InboundUpgrade {
             let mut framed = Framed::new(socket, prost_codec::Codec::new(MAX_MESSAGE_SIZE));
 
             let pb::ConnectRequest {
-                listen_addr,
-                remote_addr,
+                dst_addr,
+                dialer_addr,
             } = match framed.try_next().await.map_err(|err| {
                 error!(%err, "receive connect request failed");
 
@@ -50,15 +61,34 @@ impl libp2p_core::InboundUpgrade<NegotiatedSubstream> for InboundUpgrade {
                 Some(req) => req,
             };
 
-            debug!(%listen_addr, %remote_addr, "receive connect request done");
+            debug!(%dst_addr, %dialer_addr, "receive connect request done");
 
-            let listen_addr = parse_addr("listen", listen_addr, &mut framed).await?;
+            let dst_addr = parse_addr("dst_addr", dst_addr, &mut framed).await?;
 
-            debug!(%remote_addr, "parse listen addr done");
+            debug!(%dst_addr, "parse dst addr done");
 
-            let remote_addr = parse_addr("remote", remote_addr, &mut framed).await?;
+            if !self.listen_addrs.contains(&dst_addr) {
+                error!(%dst_addr, "not listen addr");
 
-            debug!(%remote_addr, "parse remote addr done");
+                let _ = framed
+                    .send(pb::ConnectResponse {
+                        result: Some(pb::connect_response::Result::Failed(
+                            pb::ConnectFailedResponse {
+                                reason: format!("dst addr {dst_addr} not listen"),
+                            },
+                        )),
+                    })
+                    .await;
+
+                return Err(UpgradeError::ActionFailed {
+                    action: UpgradeAction::Connect,
+                    reason: Some(format!("dst addr {dst_addr} not listen")),
+                });
+            }
+
+            let dialer_addr = parse_addr("dialer_addr", dialer_addr, &mut framed).await?;
+
+            debug!(%dialer_addr, "parse dialer addr done");
 
             if let Err(err) = framed
                 .send(pb::ConnectResponse {
@@ -73,22 +103,22 @@ impl libp2p_core::InboundUpgrade<NegotiatedSubstream> for InboundUpgrade {
                 return Err(err.into());
             }
 
-            debug!(%remote_addr, "send connect success response done");
+            debug!(%dialer_addr, "send connect success response done");
 
             if let Err(err) = framed.flush().await {
-                error!(%err, %remote_addr, "flush framed failed");
+                error!(%err, %dialer_addr, "flush framed failed");
 
                 return Err(err.into());
             }
 
-            debug!(%remote_addr, "flush framed done");
+            debug!(%dialer_addr, "flush framed done");
 
             let framed_parts = framed.into_parts();
 
             Ok(InboundUpgradeOutput {
-                listen_addr,
+                listen_addr: dst_addr,
                 connection: Connection::new(
-                    remote_addr,
+                    dialer_addr,
                     framed_parts.read_buffer.freeze(),
                     framed_parts.io,
                 ),

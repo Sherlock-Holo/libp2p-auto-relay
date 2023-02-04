@@ -1,10 +1,13 @@
 use std::collections::VecDeque;
 use std::io;
 use std::io::ErrorKind;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use dashmap::DashSet;
 use futures_util::future::Either;
-use libp2p_core::{ConnectedPoint, PeerId};
+use futures_util::task::AtomicWaker;
+use libp2p_core::{ConnectedPoint, Multiaddr, PeerId};
 use libp2p_swarm::handler::{
     ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
     ListenUpgradeError,
@@ -38,12 +41,14 @@ type SelfConnectionHandlerEvent = ConnectionHandlerEvent<
 #[derive(Debug)]
 pub struct IntoConnectionHandler {
     keepalive: KeepAlive,
+    listen_addrs: Arc<DashSet<Multiaddr>>,
 }
 
-impl Default for IntoConnectionHandler {
-    fn default() -> Self {
+impl IntoConnectionHandler {
+    pub fn new(listen_addrs: Arc<DashSet<Multiaddr>>) -> Self {
         Self {
             keepalive: KeepAlive::Yes,
+            listen_addrs,
         }
     }
 }
@@ -57,24 +62,28 @@ impl libp2p_swarm::IntoConnectionHandler for IntoConnectionHandler {
         _connected_point: &ConnectedPoint,
     ) -> Self::Handler {
         ConnectionHandler {
+            listen_addrs: self.listen_addrs.clone(),
             keepalive: self.keepalive,
             pending_events: Default::default(),
             pending_inbound_upgrade_output: Default::default(),
+            waker: Default::default(),
         }
     }
 
     fn inbound_protocol(
         &self,
     ) -> <Self::Handler as libp2p_swarm::ConnectionHandler>::InboundProtocol {
-        InboundUpgrade {}
+        InboundUpgrade::new(self.listen_addrs.clone())
     }
 }
 
 #[derive(Debug)]
 pub struct ConnectionHandler {
+    listen_addrs: Arc<DashSet<Multiaddr>>,
     keepalive: KeepAlive,
     pending_events: PendingEvents,
     pending_inbound_upgrade_output: VecDeque<InboundUpgradeOutput>,
+    waker: AtomicWaker,
 }
 
 impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
@@ -87,7 +96,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
     type OutboundOpenInfo = OutboundOpenInfo;
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        SubstreamProtocol::new(InboundUpgrade {}, ())
+        SubstreamProtocol::new(InboundUpgrade::new(self.listen_addrs.clone()), ())
     }
 
     fn connection_keep_alive(&self) -> KeepAlive {
@@ -95,7 +104,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
     }
 
     #[instrument(level = "debug")]
-    fn poll(&mut self, _cx: &mut Context<'_>) -> Poll<SelfConnectionHandlerEvent> {
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<SelfConnectionHandlerEvent> {
         if let Some(inbound_upgrade_output) = self.pending_inbound_upgrade_output.pop_front() {
             return Poll::Ready(ConnectionHandlerEvent::Custom(
                 ConnectionHandlerOutEvent::NewConnection {
@@ -108,6 +117,8 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
         if let Some(event) = self.pending_events.pop_front() {
             Poll::Ready(event)
         } else {
+            self.waker.register(cx.waker());
+
             Poll::Pending
         }
     }
@@ -116,13 +127,14 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
     fn on_behaviour_event(&mut self, event: Self::InEvent) {
         match event {
             ConnectionHandlerInEvent::Dial {
+                dst_peer_id,
                 dst_addr,
                 connection_sender,
             } => self
                 .pending_events
                 .push_back(ConnectionHandlerEvent::OutboundSubstreamRequest {
                     protocol: SubstreamProtocol::new(
-                        OutboundUpgrade::new_dial(dst_addr),
+                        OutboundUpgrade::new_dial(dst_peer_id, dst_addr),
                         OutboundOpenInfo::Dial { connection_sender },
                     ),
                 }),
@@ -144,6 +156,8 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
                     ),
                 }),
         }
+
+        self.waker.wake();
     }
 
     fn on_connection_event(
@@ -197,7 +211,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
                 _ => unreachable!(),
             },
 
-            ConnectionEvent::AddressChange(_) => {}
+            ConnectionEvent::AddressChange(_) => return,
 
             ConnectionEvent::DialUpgradeError(DialUpgradeError { info, error: err }) => {
                 let err = match err {
@@ -236,7 +250,11 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
 
             ConnectionEvent::ListenUpgradeError(ListenUpgradeError { error: err, .. }) => {
                 error!(%err, "accept connection failed");
+
+                return;
             }
         }
+
+        self.waker.wake();
     }
 }

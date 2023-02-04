@@ -3,7 +3,8 @@ syntax = "proto3";
 package auto_relay;
 
 message DialRequest {
-  string addr = 1;
+  string peer_id = 1;
+  string addr = 2;
 }
 
 message DialSuccessResponse {}
@@ -20,8 +21,8 @@ message DialResponse {
 }
 
 message ListenRequest {
-  string local_peer_id = 1;
-  string local_addr = 2;
+  string listen_peer_id = 1;
+  string listen_addr = 2;
 }
 
 message ListenSuccessResponse {}
@@ -38,8 +39,8 @@ message ListenResponse {
 }
 
 message ConnectRequest {
-  string listen_addr = 1;
-  string remote_addr = 2;
+  string dst_addr = 1;
+  string dialer_addr = 2;
 }
 
 message ConnectSuccessResponse {}

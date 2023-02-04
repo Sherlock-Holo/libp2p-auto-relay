@@ -1,9 +1,10 @@
-use std::io::IoSliceMut;
+use std::io;
+use std::io::{IoSlice, IoSliceMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{Buf, Bytes};
-use futures_util::AsyncRead;
+use futures_util::{AsyncRead, AsyncWrite};
 use libp2p_core::Multiaddr;
 use libp2p_swarm::NegotiatedSubstream;
 
@@ -33,11 +34,12 @@ impl Connection {
 }
 
 impl AsyncRead for Connection {
+    #[inline]
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
-    ) -> Poll<std::io::Result<usize>> {
+    ) -> Poll<io::Result<usize>> {
         if self.remaining_buf.has_remaining() {
             let copied = self.remaining_buf.remaining().min(buf.len());
 
@@ -50,11 +52,12 @@ impl AsyncRead for Connection {
         Pin::new(&mut self.sub_stream).poll_read(cx, buf)
     }
 
+    #[inline]
     fn poll_read_vectored(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         bufs: &mut [IoSliceMut<'_>],
-    ) -> Poll<std::io::Result<usize>> {
+    ) -> Poll<io::Result<usize>> {
         if self.remaining_buf.has_remaining() {
             let mut total = 0;
             for buf in bufs {
@@ -72,5 +75,35 @@ impl AsyncRead for Connection {
         }
 
         Pin::new(&mut self.sub_stream).poll_read_vectored(cx, bufs)
+    }
+}
+
+impl AsyncWrite for Connection {
+    #[inline]
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.sub_stream).poll_write(cx, buf)
+    }
+
+    #[inline]
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.sub_stream).poll_write_vectored(cx, bufs)
+    }
+
+    #[inline]
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.sub_stream).poll_flush(cx)
+    }
+
+    #[inline]
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.sub_stream).poll_close(cx)
     }
 }

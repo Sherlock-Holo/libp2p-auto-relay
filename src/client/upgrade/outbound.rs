@@ -16,6 +16,7 @@ use crate::{pb, AUTO_RELAY_DIAL_PROTOCOL, AUTO_RELAY_LISTEN_PROTOCOL, MAX_MESSAG
 #[derive(Debug)]
 pub enum OutboundUpgrade {
     Dial {
+        dst_peer_id: PeerId,
         dst_addr: Multiaddr,
     },
     Listen {
@@ -25,8 +26,11 @@ pub enum OutboundUpgrade {
 }
 
 impl OutboundUpgrade {
-    pub fn new_dial(dst_addr: Multiaddr) -> Self {
-        Self::Dial { dst_addr }
+    pub fn new_dial(dst_peer_id: PeerId, dst_addr: Multiaddr) -> Self {
+        Self::Dial {
+            dst_peer_id,
+            dst_addr,
+        }
     }
 
     pub fn new_listen(listen_peer_id: PeerId, listen_addr: Multiaddr) -> Self {
@@ -38,11 +42,13 @@ impl OutboundUpgrade {
 
     #[instrument(level = "debug", err)]
     async fn dial_upgrade(
+        dst_peer: PeerId,
         dst_addr: Multiaddr,
         socket: NegotiatedSubstream,
     ) -> Result<Connection, UpgradeError> {
         let mut framed = Framed::new(socket, prost_codec::Codec::new(MAX_MESSAGE_SIZE));
         let dial_request = pb::DialRequest {
+            peer_id: dst_peer.to_string(),
             addr: dst_addr.to_string(),
         };
 
@@ -112,8 +118,8 @@ impl OutboundUpgrade {
     ) -> Result<(), UpgradeError> {
         let mut framed = Framed::new(socket, prost_codec::Codec::new(MAX_MESSAGE_SIZE));
         let listen_request = pb::ListenRequest {
-            local_peer_id: listen_peer_id.to_string(),
-            local_addr: listen_addr.to_string(),
+            listen_peer_id: listen_peer_id.to_string(),
+            listen_addr: listen_addr.to_string(),
         };
 
         framed.send(listen_request).await.tap_err(|err| {
@@ -184,9 +190,12 @@ impl libp2p_core::OutboundUpgrade<NegotiatedSubstream> for OutboundUpgrade {
     fn upgrade_outbound(self, socket: NegotiatedSubstream, _info: Self::Info) -> Self::Future {
         async move {
             match self {
-                OutboundUpgrade::Dial { dst_addr } => {
-                    Ok(Either::Left(Self::dial_upgrade(dst_addr, socket).await?))
-                }
+                OutboundUpgrade::Dial {
+                    dst_peer_id: dst_peer,
+                    dst_addr,
+                } => Ok(Either::Left(
+                    Self::dial_upgrade(dst_peer, dst_addr, socket).await?,
+                )),
 
                 OutboundUpgrade::Listen {
                     listen_peer_id,

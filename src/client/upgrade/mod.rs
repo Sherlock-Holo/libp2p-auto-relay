@@ -2,7 +2,6 @@ use std::io;
 
 pub use inbound::{InboundUpgrade, InboundUpgradeOutput};
 pub use outbound::OutboundUpgrade;
-use prost_codec::Error;
 use thiserror::Error;
 
 mod inbound;
@@ -34,7 +33,7 @@ pub enum UpgradeError {
 }
 
 impl From<prost_codec::Error> for UpgradeError {
-    fn from(value: Error) -> Self {
+    fn from(value: prost_codec::Error) -> Self {
         Self::Io(value.into())
     }
 }

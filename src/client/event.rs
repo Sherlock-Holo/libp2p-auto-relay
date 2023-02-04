@@ -11,6 +11,7 @@ use crate::connection::Connection;
 #[derive(Debug)]
 pub enum TransportToBehaviourEvent {
     Dial {
+        dst_peer_id: PeerId,
         dst_addr: Multiaddr,
         relay_addr: Multiaddr,
         connection_sender: oneshot::Sender<io::Result<Connection>>,
@@ -30,7 +31,7 @@ pub enum TransportToBehaviourEvent {
 pub enum BehaviourToTransportEvent {
     ListenSuccess {
         listener_id: ListenerId,
-        local_addr: Multiaddr,
+        listen_addr: Multiaddr,
     },
 
     ListenFailed {
@@ -65,6 +66,7 @@ pub enum Event {
 #[derive(Debug)]
 pub enum ConnectionHandlerInEvent {
     Dial {
+        dst_peer_id: PeerId,
         dst_addr: Multiaddr,
         connection_sender: oneshot::Sender<io::Result<Connection>>,
     },

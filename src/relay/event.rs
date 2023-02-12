@@ -4,21 +4,23 @@ use libp2p_core::{Multiaddr, PeerId};
 
 use crate::connection::Connection;
 
+/// the relay server behaviour event
 #[derive(Debug)]
 pub enum Event {
+    /// start forward data
     StartCopy {
         dialer_addr: Multiaddr,
         dst_addr: Multiaddr,
     },
 
+    /// a new endpoint listens on a addr
     Listen {
         listen_peer_id: PeerId,
         listen_addr: Multiaddr,
     },
 
-    ListenOrDialFailed {
-        err: io::Error,
-    },
+    /// listen or dial failed
+    ListenOrDialFailed { err: io::Error },
 }
 
 #[derive(Debug)]

@@ -22,6 +22,10 @@ use super::handler::IntoConnectionHandler;
 use super::Event;
 use crate::connection::Connection;
 
+/// the endpoint behaviour,
+///
+/// it will communicate with the relay server, send dial or listen request
+/// to the relay server and wait for the response
 #[derive(Debug)]
 pub struct Behaviour {
     from_transport: Receiver<TransportToBehaviourEvent>,
@@ -421,13 +425,12 @@ impl NetworkBehaviour for Behaviour {
                     break;
                 }
 
-                Poll::Ready(Err(err)) => {
-                    error!(%err, listen_addr = %new_connection.listen_addr, "listener sender is dropped");
+                Poll::Ready(Err(_)) => {
+                    debug!(listen_addr = %new_connection.listen_addr, "listener sender is dropped");
 
                     return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                        Event::UnexpectedListenerClosed {
+                        Event::ListenerClosed {
                             listen_addr: new_connection.listen_addr,
-                            err: Box::new(err),
                         },
                     ));
                 }
@@ -435,27 +438,26 @@ impl NetworkBehaviour for Behaviour {
                 Poll::Ready(Ok(_)) => {}
             }
 
-            if let Err(err) = listener_sender_with_id
+            if listener_sender_with_id
                 .sender
                 .start_send_unpin(Ok(new_connection.connection))
+                .is_err()
             {
-                error!(%err, listen_addr = %new_connection.listen_addr, "listener sender is dropped");
+                debug!(listen_addr = %new_connection.listen_addr, "listener sender is dropped");
 
                 return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                    Event::UnexpectedListenerClosed {
+                    Event::ListenerClosed {
                         listen_addr: new_connection.listen_addr,
-                        err: Box::new(err),
                     },
                 ));
             }
 
-            if let Poll::Ready(Err(err)) = listener_sender_with_id.sender.poll_flush_unpin(cx) {
-                error!(%err, listen_addr = %new_connection.listen_addr, "listener sender is dropped");
+            if let Poll::Ready(Err(_)) = listener_sender_with_id.sender.poll_flush_unpin(cx) {
+                debug!(listen_addr = %new_connection.listen_addr, "listener sender is dropped");
 
                 return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                    Event::UnexpectedListenerClosed {
+                    Event::ListenerClosed {
                         listen_addr: new_connection.listen_addr,
-                        err: Box::new(err),
                     },
                 ));
             }

@@ -24,6 +24,10 @@ use crate::relay::event::ConnectionHandlerInEvent;
 
 type CopyFuture = impl Future<Output = io::Result<u64>>;
 
+/// the relay server behaviour
+///
+/// this behaviour will communicate with endpoints, accept dial and listen request and respond them
+/// then forward the data
 #[derive(Debug)]
 pub struct Behaviour {
     listening_clients: HashSet<PeerId>,
@@ -41,6 +45,7 @@ pub struct Behaviour {
 }
 
 impl Behaviour {
+    /// create a relay server behaviour
     pub fn new() -> Self {
         let (connect_request_sender, connect_request_receiver) = mpsc::channel(10);
 

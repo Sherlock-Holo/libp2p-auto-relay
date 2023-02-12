@@ -1,5 +1,6 @@
 #![feature(type_alias_impl_trait)]
 
+pub mod combine;
 mod connection;
 pub mod endpoint;
 pub mod relay;

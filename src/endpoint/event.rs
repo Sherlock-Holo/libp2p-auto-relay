@@ -71,19 +71,20 @@ pub enum BehaviourToTransportEvent {
     },
 }
 
+/// the endpoint behaviour event
 #[derive(Debug)]
 pub enum Event {
-    UnexpectedConnection {
-        listen_addr: Multiaddr,
-    },
+    /// relay server respond an unexpected connection, the connection listen addr isn't our listen
+    /// addr
+    UnexpectedConnection { listen_addr: Multiaddr },
 
-    UnexpectedListenerClosed {
-        listen_addr: Multiaddr,
-        err: Box<dyn std::error::Error + Send + Sync + 'static>,
-    },
+    /// the endpoint transport listener is closed
+    ListenerClosed { listen_addr: Multiaddr },
 
+    /// other error
     OtherError(Box<dyn std::error::Error + Send + Sync + 'static>),
 
+    /// the transport is dropped
     UnexpectedTransportDropped,
 }
 

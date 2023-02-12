@@ -18,6 +18,9 @@ use super::event::{BehaviourToTransportEvent, TransportToBehaviourEvent};
 use super::Behaviour;
 use crate::connection::Connection;
 
+/// the endpoint Transport
+///
+/// libp2p swarm can use it to connect target through the relay server.
 #[derive(Debug)]
 pub struct Transport {
     local_peer_id: PeerId,
@@ -31,6 +34,7 @@ pub struct Transport {
 }
 
 impl Transport {
+    /// create a new Transport.
     pub fn new(
         local_peer_id: PeerId,
         relay_addr: Multiaddr,
@@ -282,17 +286,21 @@ impl Stream for Listener {
     }
 }
 
+/// the endpoint transport error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// dial failed
     #[error("dial failed: {0}")]
     DialFailed(#[source] io::Error),
 
     #[error("unsupported dial as listener")]
     UnsupportedDialAsListener,
 
+    /// listen failed
     #[error("listen failed: {0}")]
     ListenFailed(#[source] io::Error),
 
+    /// the addr miss peer id
     #[error("addr {0} miss peer id")]
     MissPeerId(Multiaddr),
 }

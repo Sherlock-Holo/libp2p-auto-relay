@@ -23,5 +23,14 @@ tracing = "0.1"
 tap = "1"
 dashmap = "5"
 
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+libp2p-noise = "0.41"
+libp2p-yamux = "0.42"
+libp2p = { version = "0.50", features = ["macros", "ping"] }
+libp2p-swarm = { version = "0.41", features = ["tokio"] }
+pin-project = "1"
+tracing-subscriber = "0.3"
+
 [build-dependencies]
 prost-build = "0.11"

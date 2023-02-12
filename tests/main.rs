@@ -262,75 +262,46 @@ where
         addr: Multiaddr,
         as_listener: bool,
     ) -> _DialResult<A::Output, B::Output, A::Error, B::Error> {
+        let dial1;
+        let dial2;
+
         if !as_listener {
-            let dial1 = self.t1.dial(addr.clone());
-            let dial2 = self.t2.dial(addr);
-
-            match (dial1, dial2) {
-                (Err(_), Err(err)) => Err(err.map(EitherError::B)),
-                (Ok(dial), Err(_)) => {
-                    let dial = dial
-                        .map_err(EitherError::A)
-                        .map_ok(EitherOutput::First)
-                        .boxed();
-                    Ok(future::select_ok([dial]).map_ok(|res| res.0).boxed())
-                }
-                (Err(_), Ok(dial)) => {
-                    let dial = dial
-                        .map_err(EitherError::B)
-                        .map_ok(EitherOutput::Second)
-                        .boxed();
-                    Ok(future::select_ok([dial]).map_ok(|res| res.0).boxed())
-                }
-                (Ok(dial1), Ok(dial2)) => {
-                    let dial1 = dial1
-                        .map_err(EitherError::A)
-                        .map_ok(EitherOutput::First)
-                        .boxed();
-                    let dial2 = dial2
-                        .map_err(EitherError::B)
-                        .map_ok(EitherOutput::Second)
-                        .boxed();
-
-                    Ok(future::select_ok([dial1, dial2])
-                        .map_ok(|res| res.0)
-                        .boxed())
-                }
-            }
+            dial1 = self.t1.dial(addr.clone());
+            dial2 = self.t2.dial(addr);
         } else {
-            let dial1 = self.t1.dial_as_listener(addr.clone());
-            let dial2 = self.t2.dial_as_listener(addr);
+            dial1 = self.t1.dial_as_listener(addr.clone());
+            dial2 = self.t2.dial_as_listener(addr);
+        }
 
-            match (dial1, dial2) {
-                (Err(_), Err(err)) => Err(err.map(EitherError::B)),
-                (Ok(dial), Err(_)) => {
-                    let dial = dial
-                        .map_err(EitherError::A)
-                        .map_ok(EitherOutput::First)
-                        .boxed();
-                    Ok(future::select_ok([dial]).map_ok(|res| res.0).boxed())
-                }
-                (Err(_), Ok(dial)) => {
-                    let dial = dial
-                        .map_err(EitherError::B)
-                        .map_ok(EitherOutput::Second)
-                        .boxed();
-                    Ok(future::select_ok([dial]).map_ok(|res| res.0).boxed())
-                }
-                (Ok(dial1), Ok(dial2)) => {
-                    let dial1 = dial1
-                        .map_err(EitherError::A)
-                        .map_ok(EitherOutput::First)
-                        .boxed();
-                    let dial2 = dial2
-                        .map_err(EitherError::B)
-                        .map_ok(EitherOutput::Second)
-                        .boxed();
+        match (dial1, dial2) {
+            (Err(_), Err(err)) => Err(err.map(EitherError::B)),
+            (Ok(dial), Err(_)) => {
+                let dial = dial
+                    .map_err(EitherError::A)
+                    .map_ok(EitherOutput::First)
+                    .boxed();
+                Ok(future::select_ok([dial]).map_ok(|res| res.0).boxed())
+            }
+            (Err(_), Ok(dial)) => {
+                let dial = dial
+                    .map_err(EitherError::B)
+                    .map_ok(EitherOutput::Second)
+                    .boxed();
+                Ok(future::select_ok([dial]).map_ok(|res| res.0).boxed())
+            }
+            (Ok(dial1), Ok(dial2)) => {
+                let dial1 = dial1
+                    .map_err(EitherError::A)
+                    .map_ok(EitherOutput::First)
+                    .boxed();
+                let dial2 = dial2
+                    .map_err(EitherError::B)
+                    .map_ok(EitherOutput::Second)
+                    .boxed();
 
-                    Ok(future::select_ok([dial1, dial2])
-                        .map_ok(|res| res.0)
-                        .boxed())
-                }
+                Ok(future::select_ok([dial1, dial2])
+                    .map_ok(|res| res.0)
+                    .boxed())
             }
         }
     }

@@ -21,7 +21,6 @@ prost = "0.11"
 thiserror = "1"
 tracing = "0.1"
 tap = "1"
-dashmap = "5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }

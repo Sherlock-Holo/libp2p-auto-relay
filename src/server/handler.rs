@@ -123,13 +123,17 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
         match event {
             ConnectionHandlerInEvent::Connect {
                 dst_addr,
+                dst_peer_id,
                 dialer_addr,
             } => {
                 self.pending_events
                     .push_back(ConnectionHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(
-                            OutboundUpgrade::new(dialer_addr, dst_addr.clone()),
-                            OutboundOpenInfo { dst_addr },
+                            OutboundUpgrade::new(dialer_addr, dst_peer_id, dst_addr.clone()),
+                            OutboundOpenInfo {
+                                dst_addr,
+                                dst_peer_id,
+                            },
                         ),
                     });
             }
@@ -185,6 +189,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
                         ConnectionHandlerOutEvent::ConnectSuccess {
                             connection: protocol,
                             dst_addr: info.dst_addr,
+                            dst_peer_id: info.dst_peer_id,
                         },
                     ));
 
@@ -203,6 +208,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
                         ConnectionHandlerOutEvent::ConnectFailed {
                             err,
                             dst_addr: info.dst_addr,
+                            dst_peer_id: info.dst_peer_id,
                         },
                     ));
 
@@ -232,4 +238,5 @@ pub enum Error {}
 #[derive(Debug)]
 pub struct OutboundOpenInfo {
     dst_addr: Multiaddr,
+    dst_peer_id: PeerId,
 }

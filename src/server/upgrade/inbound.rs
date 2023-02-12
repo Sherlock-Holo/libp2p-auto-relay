@@ -149,6 +149,21 @@ impl InboundUpgrade {
 
         debug!(%addr, "connect done");
 
+        if let Err(err) = framed
+            .send(pb::DialResponse {
+                result: Some(pb::dial_response::Result::Success(
+                    pb::DialSuccessResponse {},
+                )),
+            })
+            .await
+        {
+            error!(%err, %addr, "send dial success response failed");
+
+            return Err(UpgradeError::UnexpectedStreamClosed);
+        }
+
+        debug!(%addr, "send dial success response done");
+
         let framed_parts = framed.into_parts();
         let dialer_connection = Connection::new(
             dialer_addr,

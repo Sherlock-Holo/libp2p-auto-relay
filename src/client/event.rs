@@ -14,6 +14,7 @@ pub enum TransportToBehaviourEvent {
         dst_peer_id: PeerId,
         dst_addr: Multiaddr,
         relay_addr: Multiaddr,
+        relay_peer_id: PeerId,
         connection_sender: oneshot::Sender<io::Result<Connection>>,
     },
 
@@ -25,6 +26,23 @@ pub enum TransportToBehaviourEvent {
         relay_addr: Multiaddr,
         connection_sender: mpsc::Sender<io::Result<Connection>>,
     },
+}
+
+impl TransportToBehaviourEvent {
+    pub fn relay_peer_id(&self) -> PeerId {
+        *match self {
+            TransportToBehaviourEvent::Dial { relay_peer_id, .. } => relay_peer_id,
+            TransportToBehaviourEvent::Listen { relay_peer_id, .. } => relay_peer_id,
+        }
+    }
+
+    pub fn relay_addr(&self) -> Multiaddr {
+        match self {
+            TransportToBehaviourEvent::Dial { relay_addr, .. } => relay_addr,
+            TransportToBehaviourEvent::Listen { relay_addr, .. } => relay_addr,
+        }
+        .clone()
+    }
 }
 
 #[derive(Debug)]
@@ -44,6 +62,12 @@ pub enum BehaviourToTransportEvent {
         peer_id: PeerId,
         peer_addr: Multiaddr,
         connection_id: ConnectionId,
+    },
+
+    DialFailed {
+        err: io::Error,
+        dst_peer_id: PeerId,
+        dst_addr: Multiaddr,
     },
 }
 

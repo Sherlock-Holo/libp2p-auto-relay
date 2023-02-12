@@ -3,19 +3,16 @@ use std::future::{ready, Future, Ready};
 use std::io;
 use std::io::ErrorKind;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
-use dashmap::DashSet;
 use futures_channel::mpsc::{Receiver, Sender};
 use futures_channel::{mpsc, oneshot};
-use futures_util::stream::SelectAll;
 use futures_util::task::AtomicWaker;
 use futures_util::{SinkExt, Stream, StreamExt};
 use libp2p_core::transport::{ListenerId, TransportError, TransportEvent};
 use libp2p_core::{Multiaddr, PeerId};
 use thiserror::Error;
-use tracing::{debug_span, error, instrument, Instrument};
+use tracing::{debug, debug_span, error, instrument, Instrument};
 
 use super::event::{BehaviourToTransportEvent, TransportToBehaviourEvent};
 use super::Behaviour;
@@ -28,9 +25,8 @@ pub struct Transport {
     relay_peer_id: PeerId,
     pending_to_behaviour: VecDeque<TransportToBehaviourEvent>,
     to_behaviour: Sender<TransportToBehaviourEvent>,
-    listeners: SelectAll<Listener>,
     from_behaviour: Receiver<BehaviourToTransportEvent>,
-    listen_addrs: Arc<DashSet<Multiaddr>>,
+    listener: Option<Listener>,
     waker: AtomicWaker,
 }
 
@@ -42,14 +38,7 @@ impl Transport {
     ) -> (Self, Behaviour) {
         let (t_to_b_sender, t_to_b_receiver) = mpsc::channel(10);
         let (b_to_t_sender, b_to_t_receiver) = mpsc::channel(10);
-
-        let listen_addrs = Arc::new(DashSet::new());
-        let client = Behaviour::new(
-            local_peer_id,
-            t_to_b_receiver,
-            b_to_t_sender,
-            listen_addrs.clone(),
-        );
+        let client = Behaviour::new(local_peer_id, t_to_b_receiver, b_to_t_sender);
 
         (
             Self {
@@ -58,9 +47,8 @@ impl Transport {
                 relay_peer_id,
                 pending_to_behaviour: Default::default(),
                 to_behaviour: t_to_b_sender,
-                listeners: Default::default(),
                 from_behaviour: b_to_t_receiver,
-                listen_addrs,
+                listener: None,
                 waker: Default::default(),
             },
             client,
@@ -76,6 +64,10 @@ impl libp2p_core::Transport for Transport {
 
     #[instrument(level = "debug", err)]
     fn listen_on(&mut self, addr: Multiaddr) -> Result<ListenerId, TransportError<Self::Error>> {
+        if let Some(listener) = &self.listener {
+            return Ok(listener.listener_id);
+        }
+
         let (conn_sender, conn_receiver) = mpsc::channel(10);
         let listener_id = ListenerId::new();
         let event = TransportToBehaviourEvent::Listen {
@@ -96,18 +88,19 @@ impl libp2p_core::Transport for Transport {
             receiver: Some(conn_receiver),
         };
 
-        self.listeners.push(listener);
+        self.listener.replace(listener);
 
         Ok(listener_id)
     }
 
     fn remove_listener(&mut self, id: ListenerId) -> bool {
-        if let Some(listener) = self
-            .listeners
-            .iter_mut()
-            .find(|listener| listener.listener_id == id)
+        if self
+            .listener
+            .as_ref()
+            .map(|listener| listener.listener_id == id)
+            .unwrap_or(false)
         {
-            listener.receiver.take();
+            self.listener.take();
 
             true
         } else {
@@ -128,6 +121,7 @@ impl libp2p_core::Transport for Transport {
             dst_peer_id,
             dst_addr: addr,
             relay_addr: self.relay_addr.clone(),
+            relay_peer_id: self.relay_peer_id,
             connection_sender: conn_sender,
         };
 
@@ -146,6 +140,8 @@ impl libp2p_core::Transport for Transport {
                     ))
                 })?
                 .map_err(Error::DialFailed)?;
+
+            debug!(?connection, "dial done");
 
             Ok(connection)
         }
@@ -172,8 +168,6 @@ impl libp2p_core::Transport for Transport {
                             listener_id,
                             listen_addr,
                         } => {
-                            self.listen_addrs.insert(listen_addr.clone());
-
                             return Poll::Ready(TransportEvent::NewAddress {
                                 listener_id,
                                 listen_addr,
@@ -192,6 +186,7 @@ impl libp2p_core::Transport for Transport {
                         }
 
                         BehaviourToTransportEvent::PeerClosed { .. } => {}
+                        BehaviourToTransportEvent::DialFailed { .. } => {}
                     }
                 }
 
@@ -226,13 +221,13 @@ impl libp2p_core::Transport for Transport {
             panic!("behaviour is dropped but transport is still polled")
         }
 
-        if let Some(event) = ready!(self.listeners.poll_next_unpin(cx)) {
-            Poll::Ready(event)
-        } else {
-            self.waker.register(cx.waker());
-
-            Poll::Pending
+        if let Some(listener) = &mut self.listener {
+            if let Some(event) = ready!(listener.poll_next_unpin(cx)) {
+                return Poll::Ready(event);
+            }
         }
+
+        Poll::Pending
     }
 
     fn address_translation(&self, _listen: &Multiaddr, _observed: &Multiaddr) -> Option<Multiaddr> {

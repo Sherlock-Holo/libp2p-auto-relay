@@ -1,13 +1,11 @@
 use std::collections::VecDeque;
 use std::io;
 use std::io::ErrorKind;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use dashmap::DashSet;
 use futures_util::future::Either;
 use futures_util::task::AtomicWaker;
-use libp2p_core::{ConnectedPoint, Multiaddr, PeerId};
+use libp2p_core::{ConnectedPoint, PeerId};
 use libp2p_swarm::handler::{
     ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
     ListenUpgradeError,
@@ -41,14 +39,14 @@ type SelfConnectionHandlerEvent = ConnectionHandlerEvent<
 #[derive(Debug)]
 pub struct IntoConnectionHandler {
     keepalive: KeepAlive,
-    listen_addrs: Arc<DashSet<Multiaddr>>,
+    local_peer_id: PeerId,
 }
 
 impl IntoConnectionHandler {
-    pub fn new(listen_addrs: Arc<DashSet<Multiaddr>>) -> Self {
+    pub fn new(local_peer_id: PeerId) -> Self {
         Self {
             keepalive: KeepAlive::Yes,
-            listen_addrs,
+            local_peer_id,
         }
     }
 }
@@ -62,7 +60,7 @@ impl libp2p_swarm::IntoConnectionHandler for IntoConnectionHandler {
         _connected_point: &ConnectedPoint,
     ) -> Self::Handler {
         ConnectionHandler {
-            listen_addrs: self.listen_addrs.clone(),
+            local_peer_id: self.local_peer_id,
             keepalive: self.keepalive,
             pending_events: Default::default(),
             pending_inbound_upgrade_output: Default::default(),
@@ -73,13 +71,13 @@ impl libp2p_swarm::IntoConnectionHandler for IntoConnectionHandler {
     fn inbound_protocol(
         &self,
     ) -> <Self::Handler as libp2p_swarm::ConnectionHandler>::InboundProtocol {
-        InboundUpgrade::new(self.listen_addrs.clone())
+        InboundUpgrade::new(self.local_peer_id)
     }
 }
 
 #[derive(Debug)]
 pub struct ConnectionHandler {
-    listen_addrs: Arc<DashSet<Multiaddr>>,
+    local_peer_id: PeerId,
     keepalive: KeepAlive,
     pending_events: PendingEvents,
     pending_inbound_upgrade_output: VecDeque<InboundUpgradeOutput>,
@@ -96,7 +94,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
     type OutboundOpenInfo = OutboundOpenInfo;
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        SubstreamProtocol::new(InboundUpgrade::new(self.listen_addrs.clone()), ())
+        SubstreamProtocol::new(InboundUpgrade::new(self.local_peer_id), ())
     }
 
     fn connection_keep_alive(&self) -> KeepAlive {

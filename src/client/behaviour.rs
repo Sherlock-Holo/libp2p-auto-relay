@@ -1,16 +1,16 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
-use std::sync::Arc;
+use std::io::ErrorKind;
 use std::task::{Context, Poll};
 
-use dashmap::DashSet;
 use futures_channel::mpsc::{Receiver, Sender};
 use futures_util::task::AtomicWaker;
 use futures_util::{SinkExt, StreamExt};
 use libp2p_core::connection::ConnectionId;
 use libp2p_core::transport::ListenerId;
 use libp2p_core::{Multiaddr, PeerId};
-use libp2p_swarm::behaviour::{ConnectionClosed, ConnectionEstablished, FromSwarm};
+use libp2p_swarm::behaviour::{ConnectionClosed, ConnectionEstablished, DialFailure, FromSwarm};
+use libp2p_swarm::dial_opts::DialOpts;
 use libp2p_swarm::{
     ConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
 };
@@ -36,7 +36,10 @@ pub struct Behaviour {
     >,
     pending_to_transport: VecDeque<BehaviourToTransportEvent>,
     to_transport: Sender<BehaviourToTransportEvent>,
-    listen_addrs: Arc<DashSet<Multiaddr>>,
+    established_relay_connection: HashMap<PeerId, HashSet<ConnectionId>>,
+    connecting_relay: HashSet<PeerId>,
+    wait_connection_transport_to_behaviour_events: HashMap<PeerId, Vec<TransportToBehaviourEvent>>,
+    pending_transport_to_behaviour_events: VecDeque<TransportToBehaviourEvent>,
     waker: AtomicWaker,
 }
 
@@ -45,7 +48,6 @@ impl Behaviour {
         peer_id: PeerId,
         from_transport: Receiver<TransportToBehaviourEvent>,
         to_transport: Sender<BehaviourToTransportEvent>,
-        listen_addrs: Arc<DashSet<Multiaddr>>,
     ) -> Self {
         Self {
             from_transport,
@@ -55,7 +57,10 @@ impl Behaviour {
             pending_actions: Default::default(),
             pending_to_transport: Default::default(),
             to_transport,
-            listen_addrs,
+            established_relay_connection: Default::default(),
+            connecting_relay: Default::default(),
+            wait_connection_transport_to_behaviour_events: Default::default(),
+            pending_transport_to_behaviour_events: Default::default(),
             waker: Default::default(),
         }
     }
@@ -66,12 +71,38 @@ impl NetworkBehaviour for Behaviour {
     type OutEvent = Event;
 
     fn new_handler(&mut self) -> Self::ConnectionHandler {
-        IntoConnectionHandler::new(self.listen_addrs.clone())
+        IntoConnectionHandler::new(self.peer_id)
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm<Self::ConnectionHandler>) {
         match event {
-            FromSwarm::ConnectionEstablished(ConnectionEstablished { .. }) => {}
+            FromSwarm::ConnectionEstablished(ConnectionEstablished {
+                peer_id,
+                connection_id,
+                endpoint,
+                ..
+            }) => {
+                if self.connecting_relay.remove(&peer_id) {
+                    debug!(
+                        %peer_id, ?connection_id, peer_addr = %endpoint.get_remote_address(),
+                        "connect relay done"
+                    );
+
+                    self.established_relay_connection
+                        .entry(peer_id)
+                        .or_default()
+                        .insert(connection_id);
+
+                    if let Some(events) = self
+                        .wait_connection_transport_to_behaviour_events
+                        .remove(&peer_id)
+                    {
+                        self.pending_transport_to_behaviour_events.extend(events);
+
+                        self.waker.wake();
+                    }
+                }
+            }
 
             FromSwarm::ConnectionClosed(ConnectionClosed {
                 peer_id,
@@ -86,10 +117,72 @@ impl NetworkBehaviour for Behaviour {
                         connection_id,
                     });
 
+                if let Some(connections) = self.established_relay_connection.get_mut(&peer_id) {
+                    connections.remove(&connection_id);
+                    if connections.is_empty() {
+                        self.established_relay_connection.remove(&peer_id);
+                    }
+                }
+
                 self.waker.wake();
             }
             FromSwarm::AddressChange(_) => {}
-            FromSwarm::DialFailure(_) => {}
+            FromSwarm::DialFailure(DialFailure { peer_id, error, .. }) => {
+                error!(?peer_id, %error, "dial peer failed");
+
+                if let Some(peer_id) = peer_id {
+                    if let Some(events) = self
+                        .wait_connection_transport_to_behaviour_events
+                        .remove(&peer_id)
+                    {
+                        let behaviour_to_transport_events =
+                            events.into_iter().map(|event| match event {
+                                TransportToBehaviourEvent::Dial {
+                                    dst_peer_id,
+                                    dst_addr,
+                                    connection_sender,
+                                    ..
+                                } => {
+                                    let _ = connection_sender.send(Err(io::Error::new(
+                                        ErrorKind::Other,
+                                        format!("dial {dst_peer_id} {dst_addr} failed: {error}"),
+                                    )));
+
+                                    BehaviourToTransportEvent::DialFailed {
+                                        err: io::Error::new(
+                                            ErrorKind::Other,
+                                            format!(
+                                                "dial {dst_peer_id} {dst_addr} failed: {error}"
+                                            ),
+                                        ),
+                                        dst_peer_id,
+                                        dst_addr,
+                                    }
+                                }
+                                TransportToBehaviourEvent::Listen {
+                                    listener_id,
+                                    local_peer_id,
+                                    local_addr,
+                                    ..
+                                } => BehaviourToTransportEvent::ListenFailed {
+                                    err: io::Error::new(
+                                        ErrorKind::Other,
+                                        format!(
+                                            "listen {local_peer_id} {local_addr} failed: {error}"
+                                        ),
+                                    ),
+                                    listener_id,
+                                    local_addr,
+                                },
+                            });
+
+                        self.pending_to_transport
+                            .extend(behaviour_to_transport_events);
+
+                        self.waker.wake();
+                    }
+                }
+            }
             FromSwarm::ListenFailure(_) => {}
             FromSwarm::NewListener(_) => {}
             FromSwarm::NewListenAddr(_) => {}
@@ -184,17 +277,55 @@ impl NetworkBehaviour for Behaviour {
         cx: &mut Context<'_>,
         _params: &mut impl PollParameters,
     ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
-        if let Poll::Ready(Some(transport_to_behaviour_event)) =
-            self.from_transport.poll_next_unpin(cx)
-        {
-            return match transport_to_behaviour_event {
+        let poll_available_transport_to_behaviour_event =
+            if let Poll::Ready(Some(event)) = self.from_transport.poll_next_unpin(cx) {
+                let relay_peer_id = event.relay_peer_id();
+                let relay_addr = event.relay_addr();
+                // if relay is not established, need dial first
+                if !self
+                    .established_relay_connection
+                    .contains_key(&relay_peer_id)
+                {
+                    self.wait_connection_transport_to_behaviour_events
+                        .entry(relay_peer_id)
+                        .or_default()
+                        .push(event);
+
+                    if !self.connecting_relay.contains(&relay_peer_id) {
+                        self.connecting_relay.insert(relay_peer_id);
+                        let handler = self.new_handler();
+
+                        return Poll::Ready(NetworkBehaviourAction::Dial {
+                            opts: DialOpts::peer_id(relay_peer_id)
+                                .addresses(vec![relay_addr])
+                                .build(),
+                            handler,
+                        });
+                    }
+
+                    None
+                } else {
+                    Some(event)
+                }
+            } else {
+                self.pending_transport_to_behaviour_events.pop_front()
+            };
+
+        if let Some(event) = poll_available_transport_to_behaviour_event {
+            debug!(
+                ?event,
+                "get poll available transport to behaviour event done"
+            );
+
+            return match event {
                 TransportToBehaviourEvent::Dial {
                     dst_peer_id,
                     dst_addr,
                     relay_addr: _relay_addr,
+                    relay_peer_id,
                     connection_sender,
                 } => Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-                    peer_id: self.peer_id,
+                    peer_id: relay_peer_id,
                     handler: NotifyHandler::Any,
                     event: ConnectionHandlerInEvent::Dial {
                         dst_peer_id,

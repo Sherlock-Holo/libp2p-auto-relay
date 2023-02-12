@@ -40,7 +40,8 @@ message ListenResponse {
 
 message ConnectRequest {
   string dst_addr = 1;
-  string dialer_addr = 2;
+  string dst_peer_id = 2;
+  string dialer_addr = 3;
 }
 
 message ConnectSuccessResponse {}

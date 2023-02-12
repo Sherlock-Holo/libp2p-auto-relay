@@ -30,6 +30,9 @@ pub enum UpgradeError {
 
     #[error("invalid addr: {0}")]
     InvalidAddr(String),
+
+    #[error("invalid peer id: {0}")]
+    InvalidPeerId(String),
 }
 
 impl From<prost_codec::Error> for UpgradeError {

@@ -1,11 +1,9 @@
 use std::future::Future;
 use std::io;
-use std::sync::Arc;
 
 use asynchronous_codec::Framed;
-use dashmap::DashSet;
 use futures_util::{Sink, SinkExt, TryStreamExt};
-use libp2p_core::{Multiaddr, UpgradeInfo};
+use libp2p_core::{Multiaddr, PeerId, UpgradeInfo};
 use libp2p_swarm::NegotiatedSubstream;
 use tracing::{debug, debug_span, error, instrument, warn, Instrument};
 
@@ -16,12 +14,12 @@ use crate::{pb, AUTO_RELAY_CONNECT_PROTOCOL, MAX_MESSAGE_SIZE};
 
 #[derive(Debug)]
 pub struct InboundUpgrade {
-    listen_addrs: Arc<DashSet<Multiaddr>>,
+    local_peer_id: PeerId,
 }
 
 impl InboundUpgrade {
-    pub fn new(listen_addrs: Arc<DashSet<Multiaddr>>) -> Self {
-        Self { listen_addrs }
+    pub fn new(local_peer_id: PeerId) -> Self {
+        Self { local_peer_id }
     }
 }
 
@@ -46,6 +44,7 @@ impl libp2p_core::InboundUpgrade<NegotiatedSubstream> for InboundUpgrade {
 
             let pb::ConnectRequest {
                 dst_addr,
+                dst_peer_id,
                 dialer_addr,
             } = match framed.try_next().await.map_err(|err| {
                 error!(%err, "receive connect request failed");
@@ -67,7 +66,11 @@ impl libp2p_core::InboundUpgrade<NegotiatedSubstream> for InboundUpgrade {
 
             debug!(%dst_addr, "parse dst addr done");
 
-            if !self.listen_addrs.contains(&dst_addr) {
+            let dst_peer_id = parse_peer_id(dst_peer_id, &mut framed).await?;
+
+            debug!(%dst_peer_id, "parse dst peer id");
+
+            if self.local_peer_id != dst_peer_id {
                 error!(%dst_addr, "not listen addr");
 
                 let _ = framed
@@ -116,6 +119,7 @@ impl libp2p_core::InboundUpgrade<NegotiatedSubstream> for InboundUpgrade {
             let framed_parts = framed.into_parts();
 
             Ok(InboundUpgradeOutput {
+                listen_peer_id: self.local_peer_id,
                 listen_addr: dst_addr,
                 connection: Connection::new(
                     dialer_addr,
@@ -164,8 +168,41 @@ where
     }
 }
 
+#[instrument(level = "debug", skip(framed))]
+async fn parse_peer_id<S>(peer_id: String, framed: &mut S) -> Result<PeerId, UpgradeError>
+where
+    S: Sink<pb::ConnectResponse> + Unpin,
+    S::Error: std::error::Error,
+{
+    match peer_id.parse::<PeerId>().map_err(|err| {
+        error!(%err, "invalid peer id");
+
+        UpgradeError::InvalidPeerId(peer_id)
+    }) {
+        Err(err) => {
+            if let Err(send_err) = framed
+                .send(pb::ConnectResponse {
+                    result: Some(pb::connect_response::Result::Failed(
+                        pb::ConnectFailedResponse {
+                            reason: err.to_string(),
+                        },
+                    )),
+                })
+                .await
+            {
+                warn!(%send_err, "send connect failed response failed");
+            }
+
+            Err(err)
+        }
+
+        Ok(addr) => Ok(addr),
+    }
+}
+
 #[derive(Debug)]
 pub struct InboundUpgradeOutput {
+    pub listen_peer_id: PeerId,
     pub listen_addr: Multiaddr,
     pub connection: Connection,
 }

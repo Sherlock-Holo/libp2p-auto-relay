@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::task::{Context, Poll};
 
@@ -8,7 +8,7 @@ use futures_util::task::AtomicWaker;
 use futures_util::{io, StreamExt, TryStreamExt};
 use futures_util::{AsyncRead, AsyncReadExt, AsyncWrite};
 use libp2p_core::connection::ConnectionId;
-use libp2p_core::{Multiaddr, PeerId};
+use libp2p_core::PeerId;
 use libp2p_swarm::behaviour::FromSwarm;
 use libp2p_swarm::{
     ConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
@@ -26,10 +26,10 @@ type CopyFuture = impl Future<Output = io::Result<u64>>;
 
 #[derive(Debug)]
 pub struct Behaviour {
-    listening_clients: HashMap<Multiaddr, PeerId>,
+    listening_clients: HashSet<PeerId>,
     connect_request_sender: mpsc::Sender<ConnectRequest>,
     connect_request_receiver: mpsc::Receiver<ConnectRequest>,
-    connecting_requests: HashMap<Multiaddr, oneshot::Sender<io::Result<Connection>>>,
+    connecting_requests: HashMap<PeerId, oneshot::Sender<io::Result<Connection>>>,
     io_copy_futs: FuturesUnordered<CopyFuture>,
     waker: AtomicWaker,
     pending_actions: VecDeque<
@@ -121,8 +121,9 @@ impl NetworkBehaviour for Behaviour {
             ConnectionHandlerOutEvent::ConnectSuccess {
                 connection,
                 dst_addr,
+                dst_peer_id,
             } => {
-                match self.connecting_requests.remove(&dst_addr) {
+                match self.connecting_requests.remove(&dst_peer_id) {
                     None => {
                         warn!(%dst_addr, "dial request may be dropped");
                     }
@@ -130,6 +131,8 @@ impl NetworkBehaviour for Behaviour {
                     Some(sender) => {
                         if sender.send(Ok(connection)).is_err() {
                             warn!(%dst_addr, "dial request may be dropped");
+                        } else {
+                            debug!("send dial request connection back done");
                         }
                     }
                 }
@@ -137,10 +140,14 @@ impl NetworkBehaviour for Behaviour {
                 return;
             }
 
-            ConnectionHandlerOutEvent::ConnectFailed { err, dst_addr } => {
+            ConnectionHandlerOutEvent::ConnectFailed {
+                err,
+                dst_addr,
+                dst_peer_id,
+            } => {
                 error!(%err, %dst_addr, "connect failed");
 
-                if let Some(sender) = self.connecting_requests.remove(&dst_addr) {
+                if let Some(sender) = self.connecting_requests.remove(&dst_peer_id) {
                     let _ = sender.send(Err(err));
                 }
 
@@ -153,8 +160,7 @@ impl NetworkBehaviour for Behaviour {
             } => {
                 debug!(%listen_peer_id, %listen_addr, "listen done");
 
-                self.listening_clients
-                    .insert(listen_addr.clone(), listen_peer_id);
+                self.listening_clients.insert(listen_peer_id);
                 self.pending_actions
                     .push_back(NetworkBehaviourAction::GenerateEvent(Event::Listen {
                         listen_peer_id,
@@ -191,13 +197,14 @@ impl NetworkBehaviour for Behaviour {
         })) = self.connect_request_receiver.poll_next_unpin(cx)
         {
             self.connecting_requests
-                .insert(dst_addr.clone(), connection_sender);
+                .insert(dst_peer_id, connection_sender);
 
             return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
                 peer_id: dst_peer_id,
                 handler: NotifyHandler::Any,
                 event: ConnectionHandlerInEvent::Connect {
                     dst_addr,
+                    dst_peer_id,
                     dialer_addr,
                 },
             });

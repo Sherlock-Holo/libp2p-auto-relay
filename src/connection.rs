@@ -1,18 +1,27 @@
-use std::io;
+use std::fmt::{Debug, Formatter};
 use std::io::{IoSlice, IoSliceMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::{fmt, io};
 
 use bytes::{Buf, Bytes};
 use futures_util::{AsyncRead, AsyncWrite};
 use libp2p_core::Multiaddr;
 use libp2p_swarm::NegotiatedSubstream;
 
-#[derive(Debug)]
 pub struct Connection {
     remote_addr: Multiaddr,
     remaining_buf: Bytes,
     sub_stream: NegotiatedSubstream,
+}
+
+impl Debug for Connection {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Connection")
+            .field("remote_addr", &self.remote_addr)
+            .field("sub_stream", &self.sub_stream)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Connection {

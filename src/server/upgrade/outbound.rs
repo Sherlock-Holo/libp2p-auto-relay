@@ -2,7 +2,7 @@ use std::future::Future;
 
 use asynchronous_codec::Framed;
 use futures_util::{SinkExt, TryStreamExt};
-use libp2p_core::{Multiaddr, UpgradeInfo};
+use libp2p_core::{Multiaddr, PeerId, UpgradeInfo};
 use libp2p_swarm::NegotiatedSubstream;
 use tracing::{debug, debug_span, error, instrument, Instrument};
 
@@ -13,13 +13,15 @@ use crate::{pb, AUTO_RELAY_CONNECT_PROTOCOL, MAX_MESSAGE_SIZE};
 #[derive(Debug)]
 pub struct OutboundUpgrade {
     dialer_addr: Multiaddr,
+    dst_peer_id: PeerId,
     dst_addr: Multiaddr,
 }
 
 impl OutboundUpgrade {
-    pub fn new(dialer_addr: Multiaddr, dst_addr: Multiaddr) -> Self {
+    pub fn new(dialer_addr: Multiaddr, dst_peer_id: PeerId, dst_addr: Multiaddr) -> Self {
         Self {
             dialer_addr,
+            dst_peer_id,
             dst_addr,
         }
     }
@@ -43,7 +45,11 @@ impl libp2p_core::OutboundUpgrade<NegotiatedSubstream> for OutboundUpgrade {
     fn upgrade_outbound(self, socket: NegotiatedSubstream, _info: Self::Info) -> Self::Future {
         async move {
             let mut framed = Framed::new(socket, prost_codec::Codec::new(MAX_MESSAGE_SIZE));
-            framed.send(pb::ConnectRequest { dst_addr: self.dst_addr.to_string(), dialer_addr: self.dialer_addr.to_string() }).await
+            framed.send(pb::ConnectRequest {
+                dst_addr: self.dst_addr.to_string(),
+                dst_peer_id: self.dst_peer_id.to_string(),
+                dialer_addr: self.dialer_addr.to_string(),
+            }).await
                 .map_err(|err| {
                     error!(dst_addr = %self.dst_addr, dialer_addr = %self.dialer_addr, %err, "send connect request failed");
 

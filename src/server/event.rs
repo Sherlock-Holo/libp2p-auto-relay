@@ -31,11 +31,13 @@ pub enum ConnectionHandlerOutEvent {
     ConnectSuccess {
         connection: Connection,
         dst_addr: Multiaddr,
+        dst_peer_id: PeerId,
     },
 
     ConnectFailed {
         err: io::Error,
         dst_addr: Multiaddr,
+        dst_peer_id: PeerId,
     },
 
     ListenSuccess {
@@ -52,6 +54,7 @@ pub enum ConnectionHandlerOutEvent {
 pub enum ConnectionHandlerInEvent {
     Connect {
         dst_addr: Multiaddr,
+        dst_peer_id: PeerId,
         dialer_addr: Multiaddr,
     },
 }

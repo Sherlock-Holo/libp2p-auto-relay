@@ -1,5 +1,7 @@
 #![feature(type_alias_impl_trait)]
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
+#[cfg(feature = "combine")]
 pub mod combine;
 mod connection;
 pub mod endpoint;

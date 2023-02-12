@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::{ready, Future, Ready};
 use std::io;
 use std::io::ErrorKind;
@@ -38,7 +38,11 @@ impl Transport {
     ) -> (Self, Behaviour) {
         let (t_to_b_sender, t_to_b_receiver) = mpsc::channel(10);
         let (b_to_t_sender, b_to_t_receiver) = mpsc::channel(10);
-        let client = Behaviour::new(local_peer_id, t_to_b_receiver, b_to_t_sender);
+        let client = Behaviour::new(
+            local_peer_id,
+            t_to_b_receiver,
+            HashMap::from([(relay_peer_id, b_to_t_sender)]),
+        );
 
         (
             Self {

@@ -15,11 +15,15 @@ use crate::{pb, AUTO_RELAY_CONNECT_PROTOCOL, MAX_MESSAGE_SIZE};
 #[derive(Debug)]
 pub struct InboundUpgrade {
     local_peer_id: PeerId,
+    relay_peer_id: Option<PeerId>,
 }
 
 impl InboundUpgrade {
-    pub fn new(local_peer_id: PeerId) -> Self {
-        Self { local_peer_id }
+    pub fn new(local_peer_id: PeerId, relay_peer_id: Option<PeerId>) -> Self {
+        Self {
+            local_peer_id,
+            relay_peer_id,
+        }
     }
 }
 
@@ -121,6 +125,7 @@ impl libp2p_core::InboundUpgrade<NegotiatedSubstream> for InboundUpgrade {
             Ok(InboundUpgradeOutput {
                 listen_peer_id: self.local_peer_id,
                 listen_addr: dst_addr,
+                relay_peer_id: self.relay_peer_id.unwrap(),
                 connection: Connection::new(
                     dialer_addr,
                     framed_parts.read_buffer.freeze(),
@@ -204,5 +209,6 @@ where
 pub struct InboundUpgradeOutput {
     pub listen_peer_id: PeerId,
     pub listen_addr: Multiaddr,
+    pub relay_peer_id: PeerId,
     pub connection: Connection,
 }

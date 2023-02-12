@@ -34,8 +34,8 @@ pub struct Behaviour {
             <Self as NetworkBehaviour>::ConnectionHandler,
         >,
     >,
-    pending_to_transport: VecDeque<BehaviourToTransportEvent>,
-    to_transport: Sender<BehaviourToTransportEvent>,
+    pending_to_transport: HashMap<PeerId, VecDeque<BehaviourToTransportEvent>>,
+    to_transports: HashMap<PeerId, Sender<BehaviourToTransportEvent>>,
     established_relay_connection: HashMap<PeerId, HashSet<ConnectionId>>,
     connecting_relay: HashSet<PeerId>,
     wait_connection_transport_to_behaviour_events: HashMap<PeerId, Vec<TransportToBehaviourEvent>>,
@@ -47,16 +47,21 @@ impl Behaviour {
     pub(crate) fn new(
         peer_id: PeerId,
         from_transport: Receiver<TransportToBehaviourEvent>,
-        to_transport: Sender<BehaviourToTransportEvent>,
+        to_transports: HashMap<PeerId, Sender<BehaviourToTransportEvent>>,
     ) -> Self {
+        let pending_to_transport = to_transports
+            .keys()
+            .map(|peer_id| (*peer_id, VecDeque::new()))
+            .collect();
+
         Self {
             from_transport,
             peer_id,
             listeners: Default::default(),
             pending_new_connections: Default::default(),
             pending_actions: Default::default(),
-            pending_to_transport: Default::default(),
-            to_transport,
+            pending_to_transport,
+            to_transports,
             established_relay_connection: Default::default(),
             connecting_relay: Default::default(),
             wait_connection_transport_to_behaviour_events: Default::default(),
@@ -110,12 +115,18 @@ impl NetworkBehaviour for Behaviour {
                 endpoint,
                 ..
             }) => {
-                self.pending_to_transport
-                    .push_back(BehaviourToTransportEvent::PeerClosed {
+                if let Some(pending_to_transport) = self.pending_to_transport.get_mut(&peer_id) {
+                    pending_to_transport.push_back(BehaviourToTransportEvent::PeerClosed {
                         peer_id,
                         peer_addr: endpoint.get_remote_address().clone(),
                         connection_id,
                     });
+                } else {
+                    error!(
+                        relay_peer_id = %peer_id,
+                        "relay peer pending to transport event queue not found"
+                    );
+                }
 
                 if let Some(connections) = self.established_relay_connection.get_mut(&peer_id) {
                     connections.remove(&connection_id);
@@ -176,8 +187,16 @@ impl NetworkBehaviour for Behaviour {
                                 },
                             });
 
-                        self.pending_to_transport
-                            .extend(behaviour_to_transport_events);
+                        if let Some(pending_to_transport) =
+                            self.pending_to_transport.get_mut(&peer_id)
+                        {
+                            pending_to_transport.extend(behaviour_to_transport_events);
+                        } else {
+                            error!(
+                                relay_peer_id = %peer_id,
+                                "relay peer pending to transport event queue not found"
+                            );
+                        }
 
                         self.waker.wake();
                     }
@@ -203,12 +222,14 @@ impl NetworkBehaviour for Behaviour {
     ) {
         match event {
             ConnectionHandlerOutEvent::NewConnection {
+                relay_peer_id,
                 listen_addr,
                 connection,
             } => {
                 self.pending_new_connections
                     .push_back(PendingNewConnection {
                         listen_addr,
+                        relay_peer_id,
                         connection,
                     });
             }
@@ -219,7 +240,9 @@ impl NetworkBehaviour for Behaviour {
                     )));
             }
 
-            ConnectionHandlerOutEvent::DialSuccess { connection, sender } => {
+            ConnectionHandlerOutEvent::DialSuccess {
+                connection, sender, ..
+            } => {
                 if let Err(_err) = sender.send(Ok(connection)) {
                     debug!("connection dial is canceled");
                 } else {
@@ -230,20 +253,26 @@ impl NetworkBehaviour for Behaviour {
             }
 
             ConnectionHandlerOutEvent::ListenSuccess {
+                relay_peer_id,
                 listener_id,
                 local_peer_id,
                 listen_addr,
             } => {
                 debug!(?listener_id, %local_peer_id, %listen_addr, "listen done");
 
-                self.pending_to_transport
-                    .push_back(BehaviourToTransportEvent::ListenSuccess {
+                if let Some(pending_to_transport) =
+                    self.pending_to_transport.get_mut(&relay_peer_id)
+                {
+                    pending_to_transport.push_back(BehaviourToTransportEvent::ListenSuccess {
                         listener_id,
                         listen_addr,
                     });
+                } else {
+                    error!(%relay_peer_id, "relay peer pending to transport event queue not found");
+                }
             }
 
-            ConnectionHandlerOutEvent::DialFailed { err, sender } => {
+            ConnectionHandlerOutEvent::DialFailed { err, sender, .. } => {
                 error!(%err, "dial failed");
 
                 let _ = sender.send(Err(err));
@@ -253,18 +282,24 @@ impl NetworkBehaviour for Behaviour {
 
             ConnectionHandlerOutEvent::ListenFailed {
                 err,
+                relay_peer_id,
                 listener_id,
                 listen_addr,
                 ..
             } => {
                 error!(%err, "listen failed");
 
-                self.pending_to_transport
-                    .push_back(BehaviourToTransportEvent::ListenFailed {
+                if let Some(pending_to_transport) =
+                    self.pending_to_transport.get_mut(&relay_peer_id)
+                {
+                    pending_to_transport.push_back(BehaviourToTransportEvent::ListenFailed {
                         err,
                         listener_id,
                         local_addr: listen_addr,
-                    })
+                    });
+                } else {
+                    error!(%relay_peer_id, "relay peer pending to transport event queue not found");
+                }
             }
         }
 
@@ -425,51 +460,64 @@ impl NetworkBehaviour for Behaviour {
                 ));
             }
 
-            self.pending_to_transport
-                .push_back(BehaviourToTransportEvent::ListenSuccess {
-                    listener_id: listener_sender_with_id.listener_id,
-                    listen_addr: new_connection.listen_addr,
+            let pending_to_transport = self
+                .pending_to_transport
+                .get_mut(&new_connection.relay_peer_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "relay peer {} pending to transport event queue not found",
+                        new_connection.relay_peer_id
+                    )
                 });
+
+            pending_to_transport.push_back(BehaviourToTransportEvent::ListenSuccess {
+                listener_id: listener_sender_with_id.listener_id,
+                listen_addr: new_connection.listen_addr,
+            });
         }
 
-        while let Some(behaviour_to_transport_event) = self.pending_to_transport.pop_front() {
-            match self.to_transport.poll_ready_unpin(cx) {
-                Poll::Pending => {
-                    // wait for next times
-                    self.pending_to_transport
-                        .push_front(behaviour_to_transport_event);
+        for (relay_peer_id, pending_to_transport) in self.pending_to_transport.iter_mut() {
+            let to_transport = self
+                .to_transports
+                .get_mut(relay_peer_id)
+                .unwrap_or_else(|| {
+                    panic!("relay peer {relay_peer_id} to transport sender not found")
+                });
 
-                    break;
+            while let Some(event) = pending_to_transport.pop_front() {
+                match to_transport.poll_ready_unpin(cx) {
+                    Poll::Pending => {
+                        // wait for next times
+                        pending_to_transport.push_front(event);
+
+                        break;
+                    }
+
+                    Poll::Ready(Err(err)) => {
+                        error!(%err, "transport is dropped");
+
+                        let relay_peer_id = *relay_peer_id;
+
+                        // remove it to avoid panic
+                        self.pending_to_transport.remove(&relay_peer_id);
+                        self.to_transports.remove(&relay_peer_id);
+
+                        return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
+                            Event::UnexpectedTransportDropped,
+                        ));
+                    }
+
+                    Poll::Ready(Ok(_)) => {}
                 }
-                Poll::Ready(Err(err)) => {
+
+                if let Err(err) = to_transport.start_send_unpin(event) {
                     error!(%err, "transport is dropped");
 
                     return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
                         Event::UnexpectedTransportDropped,
                     ));
                 }
-
-                Poll::Ready(Ok(_)) => {}
             }
-
-            if let Err(err) = self
-                .to_transport
-                .start_send_unpin(behaviour_to_transport_event)
-            {
-                error!(%err, "transport is dropped");
-
-                return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                    Event::UnexpectedTransportDropped,
-                ));
-            }
-        }
-
-        if let Poll::Ready(Err(err)) = self.to_transport.poll_flush_unpin(cx) {
-            error!(%err, "transport is dropped");
-
-            return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-                Event::UnexpectedTransportDropped,
-            ));
         }
 
         if let Some(action) = self.pending_actions.pop_front() {
@@ -485,6 +533,7 @@ impl NetworkBehaviour for Behaviour {
 #[derive(Debug)]
 struct PendingNewConnection {
     listen_addr: Multiaddr,
+    relay_peer_id: PeerId,
     connection: Connection,
 }
 

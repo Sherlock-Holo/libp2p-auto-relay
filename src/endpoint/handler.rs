@@ -56,11 +56,12 @@ impl libp2p_swarm::IntoConnectionHandler for IntoConnectionHandler {
 
     fn into_handler(
         self,
-        _remote_peer_id: &PeerId,
+        remote_peer_id: &PeerId,
         _connected_point: &ConnectedPoint,
     ) -> Self::Handler {
         ConnectionHandler {
             local_peer_id: self.local_peer_id,
+            relay_peer_id: *remote_peer_id,
             keepalive: self.keepalive,
             pending_events: Default::default(),
             pending_inbound_upgrade_output: Default::default(),
@@ -71,13 +72,14 @@ impl libp2p_swarm::IntoConnectionHandler for IntoConnectionHandler {
     fn inbound_protocol(
         &self,
     ) -> <Self::Handler as libp2p_swarm::ConnectionHandler>::InboundProtocol {
-        InboundUpgrade::new(self.local_peer_id)
+        InboundUpgrade::new(self.local_peer_id, None)
     }
 }
 
 #[derive(Debug)]
 pub struct ConnectionHandler {
     local_peer_id: PeerId,
+    relay_peer_id: PeerId,
     keepalive: KeepAlive,
     pending_events: PendingEvents,
     pending_inbound_upgrade_output: VecDeque<InboundUpgradeOutput>,
@@ -94,7 +96,10 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
     type OutboundOpenInfo = OutboundOpenInfo;
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-        SubstreamProtocol::new(InboundUpgrade::new(self.local_peer_id), ())
+        SubstreamProtocol::new(
+            InboundUpgrade::new(self.local_peer_id, Some(self.relay_peer_id)),
+            (),
+        )
     }
 
     fn connection_keep_alive(&self) -> KeepAlive {
@@ -106,6 +111,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
         if let Some(inbound_upgrade_output) = self.pending_inbound_upgrade_output.pop_front() {
             return Poll::Ready(ConnectionHandlerEvent::Custom(
                 ConnectionHandlerOutEvent::NewConnection {
+                    relay_peer_id: inbound_upgrade_output.relay_peer_id,
                     listen_addr: inbound_upgrade_output.listen_addr,
                     connection: inbound_upgrade_output.connection,
                 },
@@ -182,6 +188,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
                     self.pending_events
                         .push_back(ConnectionHandlerEvent::Custom(
                             ConnectionHandlerOutEvent::DialSuccess {
+                                relay_peer_id: self.relay_peer_id,
                                 connection,
                                 sender: connection_sender,
                             },
@@ -199,6 +206,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
                     self.pending_events
                         .push_back(ConnectionHandlerEvent::Custom(
                             ConnectionHandlerOutEvent::ListenSuccess {
+                                relay_peer_id: self.relay_peer_id,
                                 listener_id,
                                 local_peer_id,
                                 listen_addr,
@@ -223,6 +231,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
                             .push_back(ConnectionHandlerEvent::Custom(
                                 ConnectionHandlerOutEvent::DialFailed {
                                     err,
+                                    relay_peer_id: self.relay_peer_id,
                                     sender: connection_sender,
                                 },
                             ))
@@ -237,6 +246,7 @@ impl libp2p_swarm::ConnectionHandler for ConnectionHandler {
                             .push_back(ConnectionHandlerEvent::Custom(
                                 ConnectionHandlerOutEvent::ListenFailed {
                                     err,
+                                    relay_peer_id: self.relay_peer_id,
                                     listener_id,
                                     local_peer_id,
                                     listen_addr,

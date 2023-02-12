@@ -105,21 +105,25 @@ pub enum ConnectionHandlerInEvent {
 #[derive(Debug)]
 pub enum ConnectionHandlerOutEvent {
     NewConnection {
+        relay_peer_id: PeerId,
         listen_addr: Multiaddr,
         connection: Connection,
     },
 
     DialSuccess {
+        relay_peer_id: PeerId,
         connection: Connection,
         sender: oneshot::Sender<io::Result<Connection>>,
     },
 
     DialFailed {
         err: io::Error,
+        relay_peer_id: PeerId,
         sender: oneshot::Sender<io::Result<Connection>>,
     },
 
     ListenSuccess {
+        relay_peer_id: PeerId,
         listener_id: ListenerId,
         local_peer_id: PeerId,
         listen_addr: Multiaddr,
@@ -127,6 +131,7 @@ pub enum ConnectionHandlerOutEvent {
 
     ListenFailed {
         err: io::Error,
+        relay_peer_id: PeerId,
         listener_id: ListenerId,
         local_peer_id: PeerId,
         listen_addr: Multiaddr,

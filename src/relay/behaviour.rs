@@ -20,7 +20,7 @@ use super::handler::IntoConnectionHandler;
 use super::upgrade::ConnectRequest;
 use super::Event;
 use crate::connection::Connection;
-use crate::server::event::ConnectionHandlerInEvent;
+use crate::relay::event::ConnectionHandlerInEvent;
 
 type CopyFuture = impl Future<Output = io::Result<u64>>;
 

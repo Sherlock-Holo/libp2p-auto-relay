@@ -1,8 +1,8 @@
 #![feature(type_alias_impl_trait)]
 
-pub mod client;
 mod connection;
-pub mod server;
+pub mod endpoint;
+pub mod relay;
 
 #[allow(clippy::derive_partial_eq_without_eq)]
 mod pb {

@@ -1,11 +1,11 @@
 //! help user combine 2 transports
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures_util::future::BoxFuture;
-use futures_util::{future, FutureExt, TryFutureExt};
+use futures_util::{FutureExt, TryFutureExt};
 use libp2p_core::either::{EitherError, EitherFuture, EitherOutput};
 use libp2p_core::transport::{ListenerId, TransportError, TransportEvent};
 use libp2p_core::{Multiaddr, Transport};
@@ -38,27 +38,21 @@ impl<A, B> CombineTransport<A, B> {
     }
 }
 
-type _DialResult<AO, BO, AE, BE> = Result<
-    BoxFuture<'static, Result<EitherOutput<AO, BO>, EitherError<AE, BE>>>,
-    TransportError<EitherError<AE, BE>>,
->;
-
 impl<A, B> CombineTransport<A, B>
 where
     A: Transport,
     B: Transport,
-    A::Output: Send + 'static,
-    B::Output: Send + 'static,
-    A::Error: Send + 'static,
-    B::Error: Send + 'static,
-    A::Dial: Send + 'static,
-    B::Dial: Send + 'static,
 {
-    fn _dial(
+    fn inner_dial(
         &mut self,
         addr: Multiaddr,
         as_listener: bool,
-    ) -> _DialResult<A::Output, B::Output, A::Error, B::Error> {
+    ) -> Result<
+        impl Future<
+            Output = Result<EitherOutput<A::Output, B::Output>, EitherError<A::Error, B::Error>>,
+        >,
+        TransportError<EitherError<A::Error, B::Error>>,
+    > {
         let dial1;
         let dial2;
 
@@ -70,37 +64,52 @@ where
             dial2 = self.t2.dial_as_listener(addr);
         }
 
-        match (dial1, dial2) {
-            (Err(_), Err(err)) => Err(err.map(EitherError::B)),
-            (Ok(dial), Err(_)) => {
-                let dial = dial
-                    .map_err(EitherError::A)
-                    .map_ok(EitherOutput::First)
-                    .boxed();
-                Ok(future::select_ok([dial]).map_ok(|res| res.0).boxed())
-            }
-            (Err(_), Ok(dial)) => {
-                let dial = dial
-                    .map_err(EitherError::B)
-                    .map_ok(EitherOutput::Second)
-                    .boxed();
-                Ok(future::select_ok([dial]).map_ok(|res| res.0).boxed())
-            }
-            (Ok(dial1), Ok(dial2)) => {
-                let dial1 = dial1
-                    .map_err(EitherError::A)
-                    .map_ok(EitherOutput::First)
-                    .boxed();
-                let dial2 = dial2
-                    .map_err(EitherError::B)
-                    .map_ok(EitherOutput::Second)
-                    .boxed();
+        let (dial1, dial2) = match (dial1, dial2) {
+            (Err(_), Err(err)) => return Err(err.map(EitherError::B)),
+            (dial1, dial2) => (dial1, dial2),
+        };
 
-                Ok(future::select_ok([dial1, dial2])
-                    .map_ok(|res| res.0)
-                    .boxed())
+        Ok(async move {
+            match (dial1, dial2) {
+                (Err(_), Err(_)) => unreachable!(),
+
+                (Ok(dial), Err(_)) => {
+                    dial.map_err(EitherError::A)
+                        .map_ok(EitherOutput::First)
+                        .await
+                }
+                (Err(_), Ok(dial)) => {
+                    dial.map_err(EitherError::B)
+                        .map_ok(EitherOutput::Second)
+                        .await
+                }
+                (Ok(dial1), Ok(dial2)) => {
+                    let dial1 = dial1.map_err(EitherError::A).map_ok(EitherOutput::First);
+                    let dial2 = dial2.map_err(EitherError::B).map_ok(EitherOutput::Second);
+
+                    futures_util::pin_mut!(dial1);
+                    futures_util::pin_mut!(dial2);
+                    let mut dial1_mut = (&mut dial1).fuse();
+                    let mut dial2_mut = (&mut dial2).fuse();
+
+                    futures_util::select! {
+                        r1 = dial1_mut => {
+                            match r1 {
+                                Ok(r1) => Ok(r1),
+                                Err(_) => dial2.await
+                            }
+                        }
+
+                        r2 = dial2_mut => {
+                            match r2 {
+                                Ok(r2) => Ok(r2),
+                                Err(_) => dial1.await
+                            }
+                        }
+                    }
+                }
             }
-        }
+        })
     }
 }
 
@@ -108,20 +117,11 @@ impl<A, B> Transport for CombineTransport<A, B>
 where
     B: Transport,
     A: Transport,
-    A::Output: Send + 'static,
-    B::Output: Send + 'static,
-    A::Error: Send + 'static,
-    B::Error: Send + 'static,
-    A::Dial: Send + 'static,
-    B::Dial: Send + 'static,
 {
     type Output = EitherOutput<A::Output, B::Output>;
     type Error = EitherError<A::Error, B::Error>;
     type ListenerUpgrade = EitherFuture<A::ListenerUpgrade, B::ListenerUpgrade>;
-    type Dial = BoxFuture<
-        'static,
-        Result<EitherOutput<A::Output, B::Output>, EitherError<A::Error, B::Error>>,
-    >;
+    type Dial = impl Future<Output = Result<Self::Output, Self::Error>>;
 
     fn listen_on(&mut self, addr: Multiaddr) -> Result<ListenerId, TransportError<Self::Error>> {
         let id1 = self.t1.listen_on(addr.clone()).map_err(|err| match err {
@@ -152,14 +152,14 @@ where
     }
 
     fn dial(&mut self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
-        self._dial(addr, false)
+        self.inner_dial(addr, false)
     }
 
     fn dial_as_listener(
         &mut self,
         addr: Multiaddr,
     ) -> Result<Self::Dial, TransportError<Self::Error>> {
-        self._dial(addr, true)
+        self.inner_dial(addr, true)
     }
 
     fn poll(

@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 use futures_channel::{mpsc, oneshot};
 use futures_util::stream::FuturesUnordered;
 use futures_util::task::AtomicWaker;
-use futures_util::{io, StreamExt, TryStreamExt};
+use futures_util::{io, AsyncWriteExt, StreamExt, TryStreamExt};
 use futures_util::{AsyncRead, AsyncReadExt, AsyncWrite};
 use libp2p_core::connection::ConnectionId;
 use libp2p_core::PeerId;
@@ -14,7 +14,7 @@ use libp2p_swarm::behaviour::FromSwarm;
 use libp2p_swarm::{
     ConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
 };
-use tracing::{debug, debug_span, error, instrument, warn, Instrument};
+use tracing::{debug, error, instrument, warn};
 
 use super::event::ConnectionHandlerOutEvent;
 use super::handler::IntoConnectionHandler;
@@ -22,8 +22,6 @@ use super::upgrade::ConnectRequest;
 use super::Event;
 use crate::connection::Connection;
 use crate::relay::event::ConnectionHandlerInEvent;
-
-type CopyFuture = impl Future<Output = io::Result<u64>>;
 
 /// the relay server behaviour
 ///
@@ -35,7 +33,7 @@ pub struct Behaviour {
     connect_request_sender: mpsc::Sender<ConnectRequest>,
     connect_request_receiver: mpsc::Receiver<ConnectRequest>,
     connecting_requests: HashMap<PeerId, oneshot::Sender<io::Result<Connection>>>,
-    io_copy_futs: FuturesUnordered<CopyFuture>,
+    io_copy_futures: FuturesUnordered<CopyFuture>,
     waker: AtomicWaker,
     pending_actions: VecDeque<
         NetworkBehaviourAction<
@@ -55,7 +53,7 @@ impl Behaviour {
             connect_request_sender,
             connect_request_receiver,
             connecting_requests: Default::default(),
-            io_copy_futs: Default::default(),
+            io_copy_futures: Default::default(),
             waker: Default::default(),
             pending_actions: Default::default(),
         }
@@ -118,8 +116,8 @@ impl NetworkBehaviour for Behaviour {
                 let (dial_conn_read, dial_conn_write) = dialer_connection.split();
                 let (conn_read, conn_write) = connection.split();
 
-                self.io_copy_futs.push(copy(dial_conn_read, conn_write));
-                self.io_copy_futs.push(copy(conn_read, dial_conn_write));
+                self.io_copy_futures.push(copy(dial_conn_read, conn_write));
+                self.io_copy_futures.push(copy(conn_read, dial_conn_write));
                 self.pending_actions
                     .push_back(NetworkBehaviourAction::GenerateEvent(event));
             }
@@ -138,7 +136,7 @@ impl NetworkBehaviour for Behaviour {
                         if sender.send(Ok(connection)).is_err() {
                             warn!(%dst_addr, "dial request may be dropped");
                         } else {
-                            debug!("send dial request connection back done");
+                            debug!(%dst_addr, "send dial request connection back done");
                         }
                     }
                 }
@@ -191,7 +189,7 @@ impl NetworkBehaviour for Behaviour {
         cx: &mut Context<'_>,
         _params: &mut impl PollParameters,
     ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
-        if let Poll::Ready(Some(Err(err))) = self.io_copy_futs.try_poll_next_unpin(cx) {
+        if let Poll::Ready(Some(Err(err))) = self.io_copy_futures.try_poll_next_unpin(cx) {
             error!(%err, "a relay connection copy error happened");
         }
 
@@ -242,9 +240,15 @@ impl NetworkBehaviour for Behaviour {
     }
 }
 
+type CopyFuture = impl Future<Output = io::Result<u64>>;
+
 #[inline]
+#[instrument(level = "debug", err, skip(reader, writer))]
 async fn copy<R: AsyncRead, W: AsyncWrite + Unpin>(reader: R, mut writer: W) -> io::Result<u64> {
-    io::copy(reader, &mut writer)
-        .instrument(debug_span!("copy"))
-        .await
+    let n = io::copy(reader, &mut writer).await?;
+
+    writer.flush().await?;
+    writer.close().await?;
+
+    Ok(n)
 }

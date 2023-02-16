@@ -114,23 +114,38 @@ impl InboundUpgrade {
             connection_sender,
         };
 
-        self.connect_request_sender
-            .send(connect_request)
-            .await
-            .map_err(|err| {
-                error!(%err, %addr, "behaviour is dropped");
+        if let Err(err) = self.connect_request_sender.send(connect_request).await {
+            error!(%err, %addr, "behaviour is dropped");
 
-                UpgradeError::BehaviourDropped
-            })?;
+            let _ = framed
+                .send(pb::DialResponse {
+                    result: Some(pb::dial_response::Result::Failed(pb::DialFailedResponse {
+                        reason: err.to_string(),
+                    })),
+                })
+                .await;
+
+            return Err(UpgradeError::BehaviourDropped);
+        }
 
         debug!(%addr, "send connect request to behaviour done");
 
-        let connection = match connection_receiver.await.map_err(|err| {
-            error!(%err, %addr, "behaviour is dropped");
-
-            UpgradeError::BehaviourDropped
-        })? {
+        let connection = match connection_receiver.await {
             Err(err) => {
+                error!(%err, %addr, "behaviour is dropped");
+
+                let _ = framed
+                    .send(pb::DialResponse {
+                        result: Some(pb::dial_response::Result::Failed(pb::DialFailedResponse {
+                            reason: err.to_string(),
+                        })),
+                    })
+                    .await;
+
+                return Err(UpgradeError::BehaviourDropped);
+            }
+
+            Ok(Err(err)) => {
                 error!(%err, %addr, "behaviour connect failed");
 
                 let _ = framed
@@ -144,7 +159,7 @@ impl InboundUpgrade {
                 return Err(UpgradeError::ConnectFailed { addr, err });
             }
 
-            Ok(connection) => connection,
+            Ok(Ok(connection)) => connection,
         };
 
         debug!(%addr, "connect done");

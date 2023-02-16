@@ -21,6 +21,12 @@ pub enum Event {
 
     /// listen or dial failed
     ListenOrDialFailed { err: io::Error },
+
+    /// invalid connect request
+    ConnectToNotListenPeer {
+        dialer_addr: Multiaddr,
+        dst_peer_id: PeerId,
+    },
 }
 
 #[derive(Debug)]

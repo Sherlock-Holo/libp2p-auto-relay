@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::io::ErrorKind;
 use std::task::{Context, Poll};
 
 use futures_channel::{mpsc, oneshot};
@@ -201,6 +202,22 @@ impl NetworkBehaviour for Behaviour {
             connection_sender,
         })) = self.connect_request_receiver.poll_next_unpin(cx)
         {
+            if !self.listening_clients.contains(&dst_peer_id) {
+                error!(%dialer_addr, %dst_peer_id, %dst_addr, "dialer want to dial a not listen peer");
+
+                let _ = connection_sender.send(Err(io::Error::new(
+                    ErrorKind::ConnectionRefused,
+                    format!("dst peer id {dst_peer_id} is not listened"),
+                )));
+
+                return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
+                    Event::ConnectToNotListenPeer {
+                        dialer_addr,
+                        dst_peer_id,
+                    },
+                ));
+            }
+
             self.connecting_requests
                 .insert(dst_peer_id, connection_sender);
 
